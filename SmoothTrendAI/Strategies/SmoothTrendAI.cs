@@ -50,6 +50,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // ─── Estado de la posición activa ─────────────────────────────────
         private bool          _positionOpen;
+        private bool          _entrySubmitted;
         private string        _activeDirection;
         private string        _activeSetupType;
         private double        _activeEntryPrice;
@@ -76,6 +77,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool   _scaleInPending;
         private double _scaleInTriggerPrice;
         private int    _scaleInContracts;
+        private int    _mainEntryContracts;
 
         protected override void OnStateChange()
         {
@@ -212,6 +214,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Solo procesar la barra principal
             if (BarsInProgress != IDX_MAIN) return;
             if (CurrentBar < BarsRequiredToTrade) return;
+
+            if (_positionOpen && Position.MarketPosition == MarketPosition.Flat)
+            {
+                FinalizarPosicion("BrokerExit");
+                return;
+            }
+            if (_entrySubmitted && !_positionOpen)
+                return;
 
             // ── Reset diario ──────────────────────────────────────────────
             if (Time[0].Date != _lastDailyReset.Date)
@@ -448,10 +458,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (EnableScaleIn && risk.Contracts >= 2)
             {
                 int initCtrs      = _riskManager.CalculateInitialContracts(risk.Contracts);
+                _mainEntryContracts = initCtrs;
                 _scaleInContracts = risk.Contracts - initCtrs;
                 _scaleInTriggerPrice = isLongEntry
                     ? Close[0] + ScaleInTicks * TickSize
                     : Close[0] - ScaleInTicks * TickSize;
+
+                SetStopLoss(isLongEntry ? "STA_Long" : "STA_Short",
+                            CalculationMode.Price, risk.StopPrice, false);
+                if (_scaleInContracts > 0)
+                    SetStopLoss("STA_ScaleIn", CalculationMode.Price, risk.StopPrice, false);
 
                 if (isLongEntry) EnterLong (initCtrs, "STA_Long");
                 else             EnterShort(initCtrs, "STA_Short");
@@ -462,11 +478,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else
             {
+                _mainEntryContracts = risk.Contracts;
+                SetStopLoss(isLongEntry ? "STA_Long" : "STA_Short",
+                            CalculationMode.Price, risk.StopPrice, false);
+
                 if (isLongEntry) EnterLong (risk.Contracts, "STA_Long");
                 else             EnterShort(risk.Contracts, "STA_Short");
             }
 
-            _positionOpen      = true;
+            _positionOpen      = false;
+            _entrySubmitted    = true;
             _activeDirection   = setup.Direction;
             _activeSetupType   = setup.SetupType;
             _activeEntryPrice  = Close[0];
@@ -563,6 +584,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     : Low[0]  <= _scaleInTriggerPrice;
                 if (scaleTriggered)
                 {
+                    SetStopLoss("STA_ScaleIn", CalculationMode.Price, _activeStopPrice, false);
                     if (isLong) EnterLong (_scaleInContracts, "STA_ScaleIn");
                     else        EnterShort(_scaleInContracts, "STA_ScaleIn");
                     _scaleInPending   = false;
@@ -586,12 +608,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                 {
                     _tp1Hit = true;
                     int mitad = Math.Max(1, Position.Quantity / 2);
+                    int mainExitQty = Math.Min(mitad, Math.Max(0, _mainEntryContracts));
+                    int scaleExitQty = mitad - mainExitQty;
 
-                    if (isLong) ExitLong (mitad, "STA_TP1", "STA_Long");
-                    else        ExitShort(mitad, "STA_TP1", "STA_Short");
+                    if (mainExitQty > 0)
+                    {
+                        if (isLong) ExitLong (mainExitQty, "STA_TP1", "STA_Long");
+                        else        ExitShort(mainExitQty, "STA_TP1", "STA_Short");
+                    }
+                    if (scaleExitQty > 0)
+                    {
+                        if (isLong) ExitLong (scaleExitQty, "STA_TP1_Scale", "STA_ScaleIn");
+                        else        ExitShort(scaleExitQty, "STA_TP1_Scale", "STA_ScaleIn");
+                    }
 
                     // Mover stop a breakeven
                     _activeStopPrice = _activeEntryPrice;
+                    ActualizarStopProtector(_activeStopPrice);
 
                     // Activar trailing
                     if (TrailAfterTP1)
@@ -616,6 +649,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (!isLong && nuevoTrail < _trailingStopPrice) _trailingStopPrice = nuevoTrail;
 
                 _activeStopPrice = _trailingStopPrice;
+                ActualizarStopProtector(_activeStopPrice);
 
                 if (isLong  && Low[0]  <= _trailingStopPrice) { CerrarPosicion("TrailingStop"); return; }
                 if (!isLong && High[0] >= _trailingStopPrice) { CerrarPosicion("TrailingStop"); return; }
@@ -637,6 +671,19 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (isLong) ExitLong ("STA_Salida_" + razon, "STA_Long");
             else        ExitShort("STA_Salida_" + razon, "STA_Short");
+
+            if (!_scaleInPending)
+            {
+                if (isLong) ExitLong ("STA_SalidaScale_" + razon, "STA_ScaleIn");
+                else        ExitShort("STA_SalidaScale_" + razon, "STA_ScaleIn");
+            }
+
+            FinalizarPosicion(razon);
+        }
+
+        private void FinalizarPosicion(string razon)
+        {
+            bool isLong = _activeDirection == "LONG";
 
             // Calcular P&L
             double pnlTicks = isLong
@@ -666,10 +713,69 @@ namespace NinjaTrader.NinjaScript.Strategies
             Print($"[STA] SALIDA {razon} | PnL={pnlTicks:F1}t (${pnlUsd:F2})");
 
             _positionOpen     = false;
+            _entrySubmitted    = false;
             _activeRecord     = null;
             _trailingActive   = false;
             _scaleInPending   = false;
             _scaleInContracts = 0;
+            _mainEntryContracts = 0;
+        }
+
+        private void ActualizarStopProtector(double stopPrice)
+        {
+            if (_activeDirection == "LONG")
+                SetStopLoss("STA_Long", CalculationMode.Price, stopPrice, false);
+            else
+                SetStopLoss("STA_Short", CalculationMode.Price, stopPrice, false);
+
+            if (!_scaleInPending)
+                SetStopLoss("STA_ScaleIn", CalculationMode.Price, stopPrice, false);
+        }
+
+        protected override void OnExecutionUpdate(Execution execution, string executionId,
+                                                  double price, int quantity,
+                                                  MarketPosition marketPosition,
+                                                  string orderId, DateTime time)
+        {
+            if (execution?.Order == null ||
+                (execution.Order.OrderState != OrderState.Filled &&
+                 execution.Order.OrderState != OrderState.PartFilled))
+                return;
+
+            string name = execution.Order.Name ?? "";
+            if (name == "STA_Long" || name == "STA_Short")
+            {
+                _positionOpen = true;
+                _entrySubmitted = true;
+                _activeEntryPrice = price;
+                if (_activeRecord != null)
+                    _activeRecord.EntryPrice = price;
+            }
+            else if (name == "STA_ScaleIn")
+            {
+                _positionOpen = true;
+            }
+        }
+
+        protected override void OnOrderUpdate(Order order, double limitPrice,
+                                              double stopPrice, int quantity,
+                                              int filled, double averageFillPrice,
+                                              OrderState orderState, DateTime time,
+                                              ErrorCode error, string nativeError)
+        {
+            if (order == null) return;
+
+            string name = order.Name ?? "";
+            bool isEntry = name == "STA_Long" || name == "STA_Short";
+            if (!isEntry) return;
+
+            if (orderState == OrderState.Rejected ||
+                orderState == OrderState.Cancelled)
+            {
+                _entrySubmitted = false;
+                _positionOpen = Position.MarketPosition != MarketPosition.Flat;
+                Print($"[STA] Orden de entrada {orderState}: {nativeError}");
+            }
         }
 
         // ─── Helpers ────────────────────────────────────────────────────────

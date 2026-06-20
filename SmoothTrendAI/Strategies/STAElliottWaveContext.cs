@@ -38,6 +38,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // ─── Estado actual ─────────────────────────────────────────────────
         public string CurrentWavePosition { get; private set; } = "Undefined";
+        public string CurrentWaveDirection { get; private set; } = "Undefined";
         public double WaveConfidence      { get; private set; }
         public bool   IsFavorableForLong  { get; private set; }
         public bool   IsFavorableForShort { get; private set; }
@@ -151,6 +152,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (rAlcista.Confidence >= MinWaveConfidence)
             {
                 CurrentWavePosition = rAlcista.Position;
+                CurrentWaveDirection = "LONG";
                 WaveConfidence      = rAlcista.Confidence;
                 ActualizarFibonacci(pts, esAlcista: true);
                 return;
@@ -160,6 +162,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (rBajista.Confidence >= MinWaveConfidence)
             {
                 CurrentWavePosition = rBajista.Position;
+                CurrentWaveDirection = "SHORT";
                 WaveConfidence      = rBajista.Confidence;
                 ActualizarFibonacci(pts, esAlcista: false);
                 return;
@@ -169,11 +172,13 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (rCorreccion.Confidence >= MinWaveConfidence)
             {
                 CurrentWavePosition = rCorreccion.Position;
+                CurrentWaveDirection = "BOTH";
                 WaveConfidence      = rCorreccion.Confidence;
                 return;
             }
 
             CurrentWavePosition = "Undefined";
+            CurrentWaveDirection = "Undefined";
             WaveConfidence      = 0.0;
         }
 
@@ -411,8 +416,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 CurrentWavePosition == "Wave_5_Start"      ||
                 CurrentWavePosition == "Correction_C_End";
 
-            IsFavorableForLong  = fasesImpulsivas && WaveConfidence >= MinWaveConfidence;
-            IsFavorableForShort = fasesImpulsivas && WaveConfidence >= MinWaveConfidence;
+            IsFavorableForLong  = fasesImpulsivas && WaveConfidence >= MinWaveConfidence
+                                  && (CurrentWaveDirection == "LONG" || CurrentWaveDirection == "BOTH");
+            IsFavorableForShort = fasesImpulsivas && WaveConfidence >= MinWaveConfidence
+                                  && (CurrentWaveDirection == "SHORT" || CurrentWaveDirection == "BOTH");
         }
 
         public int PivotCount => _pivots.Count;
@@ -421,6 +428,6 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         public override string ToString() =>
             $"Wave={CurrentWavePosition}, Conf={WaveConfidence:F2}, " +
-            $"FavL={IsFavorableForLong}, FavS={IsFavorableForShort}, Pivots={_pivots.Count}";
+            $"Dir={CurrentWaveDirection}, FavL={IsFavorableForLong}, FavS={IsFavorableForShort}, Pivots={_pivots.Count}";
     }
 }

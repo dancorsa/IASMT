@@ -9,7 +9,6 @@ using System;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
-using System.Text.Json;          // solo para JsonSerializer.Serialize (salida)
 using System.Threading.Tasks;
 using Newtonsoft.Json.Linq;      // para parseo de respuestas (disponible en NT8)
 
@@ -169,61 +168,71 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ─── Serialización ─────────────────────────────────────────────────
-        private string SerializarPayload(STASignalPayload p) => JsonSerializer.Serialize(new
+        private string SerializarPayload(STASignalPayload p) => new JObject
         {
-            strategy_type              = "smooth_trend_cloud_v2",
-            instrument                 = p.Instrument,
-            bar_type                   = p.BarType,
-            timestamp                  = p.Timestamp,
-            signal_direction           = p.SignalDirection,
-            setup_type                 = p.SetupType,
-            trigger_line               = p.TriggerLine,
-            smooth_trend_line          = p.SmoothTrendLine,
-            cloud_width_ticks          = p.CloudWidthTicks,
-            bars_in_current_color      = p.BarsInCurrentColor,
-            rejection_candle           = p.RejectionCandle,
-            daily_context              = p.DailyContext,
-            allowed_direction          = p.AllowedDirection,
-            prior_high                 = p.PriorHigh,
-            prior_close                = p.PriorClose,
-            prior_low                  = p.PriorLow,
-            consecutive_direction_days = p.ConsecutiveDirectionDays,
-            has_strong_directional_bias = p.HasStrongDirectionalBias,
-            elliott_wave_position      = p.ElliottWavePosition,
-            elliott_wave_confidence    = p.ElliottWaveConfidence,
-            elliott_favorable          = p.ElliottFavorable,
-            nearest_fib_support        = p.NearestFibSupport,
-            nearest_fib_resistance     = p.NearestFibResistance,
-            base_confidence_pre_ai     = p.BaseConfidencePreAI,
-            rsi_m15                    = p.RsiM15,
-            volume_ratio               = p.VolumeRatio,
-            current_price              = p.CurrentPrice,
-            proposed_entry             = p.ProposedEntry,
-            proposed_stop              = p.ProposedStop,
-            proposed_target_1          = p.ProposedTarget1,
-            proposed_target_2          = p.ProposedTarget2,
-            risk_reward_ratio          = p.RiskRewardRatio
-        });
+            ["strategy_type"]               = "smooth_trend_cloud_v2",
+            ["instrument"]                  = p.Instrument,
+            ["bar_type"]                    = p.BarType,
+            ["timestamp"]                   = p.Timestamp,
+            ["signal_direction"]            = p.SignalDirection,
+            ["setup_type"]                  = p.SetupType,
+            ["trigger_line"]                = p.TriggerLine,
+            ["smooth_trend_line"]           = p.SmoothTrendLine,
+            ["cloud_width_ticks"]           = p.CloudWidthTicks,
+            ["bars_in_current_color"]       = p.BarsInCurrentColor,
+            ["rejection_candle"]            = p.RejectionCandle,
+            ["daily_context"]               = p.DailyContext,
+            ["allowed_direction"]           = p.AllowedDirection,
+            ["prior_high"]                  = p.PriorHigh,
+            ["prior_close"]                 = p.PriorClose,
+            ["prior_low"]                   = p.PriorLow,
+            ["consecutive_direction_days"]  = p.ConsecutiveDirectionDays,
+            ["has_strong_directional_bias"] = p.HasStrongDirectionalBias,
+            ["elliott_wave_position"]       = p.ElliottWavePosition,
+            ["elliott_wave_confidence"]     = p.ElliottWaveConfidence,
+            ["elliott_favorable"]           = p.ElliottFavorable,
+            ["nearest_fib_support"]         = p.NearestFibSupport,
+            ["nearest_fib_resistance"]      = p.NearestFibResistance,
+            ["base_confidence_pre_ai"]      = p.BaseConfidencePreAI,
+            ["rsi_m15"]                     = p.RsiM15,
+            ["volume_ratio"]                = p.VolumeRatio,
+            ["current_price"]               = p.CurrentPrice,
+            ["proposed_entry"]              = p.ProposedEntry,
+            ["proposed_stop"]               = p.ProposedStop,
+            ["proposed_target_1"]           = p.ProposedTarget1,
+            ["proposed_target_2"]           = p.ProposedTarget2,
+            ["risk_reward_ratio"]           = p.RiskRewardRatio
+        }.ToString(Newtonsoft.Json.Formatting.None);
 
-        private string BuildClaudeBody(string userContent) => JsonSerializer.Serialize(new
+        private string BuildClaudeBody(string userContent) => new JObject
         {
-            model      = "claude-sonnet-4-6",
-            max_tokens = 256,
-            system     = SYSTEM_PROMPT,
-            messages   = new[] { new { role = "user", content = userContent } }
-        });
-
-        private string BuildOpenAIBody(string userContent) => JsonSerializer.Serialize(new
-        {
-            model    = "gpt-4o",
-            messages = new[]
+            ["model"]      = "claude-sonnet-4-6",
+            ["max_tokens"] = 256,
+            ["system"]     = SYSTEM_PROMPT,
+            ["messages"]   = new JArray(new JObject
             {
-                new { role = "system", content = SYSTEM_PROMPT },
-                new { role = "user",   content = userContent   }
-            },
-            max_tokens  = 256,
-            temperature = 0.1
-        });
+                ["role"] = "user",
+                ["content"] = userContent
+            })
+        }.ToString(Newtonsoft.Json.Formatting.None);
+
+        private string BuildOpenAIBody(string userContent) => new JObject
+        {
+            ["model"] = "gpt-4o-mini",
+            ["messages"] = new JArray(
+                new JObject
+                {
+                    ["role"] = "system",
+                    ["content"] = SYSTEM_PROMPT
+                },
+                new JObject
+                {
+                    ["role"] = "user",
+                    ["content"] = userContent
+                }),
+            ["max_tokens"] = 256,
+            ["temperature"] = 0.1
+        }.ToString(Newtonsoft.Json.Formatting.None);
 
         private HttpRequestMessage BuildRequest(string body)
         {
@@ -260,8 +269,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else
                     texto = jOuter["choices"][0]["message"]["content"].ToString();
 
-                // Parsear el JSON de respuesta de la IA
-                var jResp = JObject.Parse(texto.Trim());
+                var jResp = JObject.Parse(ExtraerJson(texto));
 
                 return new STAAIValidationResult
                 {
@@ -287,6 +295,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                     SetupQuality   = "medium"
                 };
             }
+        }
+
+        private static string ExtraerJson(string texto)
+        {
+            if (string.IsNullOrWhiteSpace(texto)) return "{}";
+            int start = texto.IndexOf('{');
+            int end   = texto.LastIndexOf('}');
+            return start >= 0 && end > start
+                ? texto.Substring(start, end - start + 1)
+                : texto.Trim();
         }
 
         // ─── Simulación local para backtest ───────────────────────────────
