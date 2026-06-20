@@ -1,0 +1,16 @@
+# NinjaTrader compiled output
+*.dll
+*.pdb
+*.cache
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# Logs generados en runtime (van en NT8\logs, no en el repo)
+*.csv
