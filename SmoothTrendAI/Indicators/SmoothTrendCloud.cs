@@ -135,6 +135,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LogRejectedSignals      = true;
                 ShowVWAP                = true;
                 TickValue               = 2.0;
+                VWAPSessionResetHour    = 18;
 
                 // Plot 0: TriggerLine (EMA rápida)
                 AddPlot(new Stroke(Brushes.DodgerBlue, 2), PlotStyle.Line, "TriggerLine");
@@ -207,12 +208,17 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _fechaContador = Time[0].Date;
             }
 
-            // ── VWAP intradiario ──────────────────────────────────────────
-            if (Time[0].Date != _vwapDate)
+            // ── VWAP intradiario — reset en inicio de sesión Globex ──────
+            // La sesión Globex de CME arranca a las VWAPSessionResetHour (18:00 ET).
+            // Barras antes de esa hora pertenecen a la sesión del día anterior.
+            DateTime sesionFecha = Time[0].TimeOfDay.TotalHours >= VWAPSessionResetHour
+                ? Time[0].Date
+                : Time[0].Date.AddDays(-1);
+            if (sesionFecha != _vwapDate)
             {
                 _vwapNumer = 0;
                 _vwapDenom = 0;
-                _vwapDate  = Time[0].Date;
+                _vwapDate  = sesionFecha;
             }
             double tp = (High[0] + Low[0] + Close[0]) / 3.0;
             _vwapNumer  += tp * Volume[0];
@@ -982,6 +988,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "Valor monetario de 1 tick del instrumento. MNQ=$2 | NQ=$20 | MES=$1.25 | ES=$12.50",
                  Order = 2, GroupName = "5. VWAP y Sesión")]
         public double TickValue { get; set; }
+
+        [Range(0, 23)]
+        [Display(Name = "Hora de inicio de sesión (reset VWAP)",
+                 Description = "Hora local del chart en que inicia la sesión Globex. CME futuros US = 18 (6 PM ET). Para VWAP solo RTH usar 9.",
+                 Order = 3, GroupName = "5. VWAP y Sesión")]
+        public int VWAPSessionResetHour { get; set; }
 
         // ─── Accessor del plot VWAP ────────────────────────────────────────
         [Browsable(false)]
