@@ -72,6 +72,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         private Queue<int> _oldSegmentBars;
         private const int  SEGMENT_LOOKBACK = 300;
 
+        // ─── Rastreo de niveles de entrada para limpieza automática ──────
+        private Queue<int> _oldLevelBars;
+        private const int  LEVEL_LOOKBACK = 100;
+
         // ─── Validación IA ─────────────────────────────────────────────────
         private static readonly HttpClient _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         private bool   _isRealtime;
@@ -81,6 +85,10 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ─── Confluencia M15 ───────────────────────────────────────────────
         private bool _m15CloudIsUp;
         private int  _idxM15 = -1;
+
+        // ─── Log de señales rechazadas ─────────────────────────────────────
+        private string _rejectedLogPath;
+        private static readonly object _logLock = new object();
 
         protected override void OnStateChange()
         {
@@ -109,6 +117,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 EnableAlerts            = true;
                 ShowDashboard           = true;
                 UseM15Confluence        = false;
+                ShowEntryLevels         = true;
+                LevelStopBufferTicks    = 3;
+                LevelTP1Ratio           = 2.0;
+                LevelTP2Ratio           = 4.0;
+                UseTimeFilter           = false;
+                LogRejectedSignals      = true;
 
                 // Plot 0: TriggerLine (EMA rápida)
                 AddPlot(new Stroke(Brushes.DodgerBlue, 2), PlotStyle.Line, "TriggerLine");
@@ -131,8 +145,21 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _lastColorWasUp     = true;
                 _segmentStartBar    = 0;
                 _oldSegmentBars     = new Queue<int>();
+                _oldLevelBars       = new Queue<int>();
                 _isRealtime         = false;
                 RebuildBrushes();
+
+                if (LogRejectedSignals)
+                {
+                    _rejectedLogPath = System.IO.Path.Combine(
+                        Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                        "NinjaTrader 8",
+                        $"STC_rechazadas_{DateTime.Today:yyyyMMdd}.csv");
+                    if (!System.IO.File.Exists(_rejectedLogPath))
+                        System.IO.File.WriteAllText(_rejectedLogPath,
+                            "Timestamp,Instrumento,Direccion,Tipo,Razon," +
+                            "BarrasEnColor,NubeTicks,RSI,Sesion,Detalle\n");
+                }
             }
             else if (State == State.Realtime)
             {
@@ -216,25 +243,60 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (ShowSignalArrows)
             {
+                bool horarioOkT1 = !UseTimeFilter || EsHorarioCalidad();
                 if (_hasCrossUpSignal)
                 {
-                    Draw.ArrowUp(this, "CrUp_" + CurrentBar, true, 0,
-                        Low[0] - TickSize * 4, Brushes.Lime);
-                    if (EnableAlerts && _isRealtime)
-                        Alert("STC_CrUp_" + CurrentBar, Priority.High,
-                              $"SmoothTrendCloud — Cruce LONG {Instrument.FullName}",
-                              NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav",
-                              30, Brushes.LimeGreen, Brushes.Black);
+                    if (!horarioOkT1)
+                        LogRechazada("LONG", "TrendStart", "Horario",
+                                     $"hora={Time[0]:HH:mm}");
+                    else
+                    {
+                        Draw.ArrowUp(this, "CrUp_" + CurrentBar, true, 0,
+                            Low[0] - TickSize * 4, Brushes.Lime);
+                        if (ShowEntryLevels && _isRealtime)
+                        {
+                            double entryP = Close[0];
+                            double atrP   = CurrentBar >= 20 ? ATR(14)[0] : TickSize * 10;
+                            double stopD  = Math.Max(CloudWidth * 1.5,
+                                                Math.Max(atrP * 1.3, 6 * TickSize));
+                            DibujarNiveles(true, CurrentBar, entryP,
+                                           entryP - stopD,
+                                           entryP + stopD * LevelTP1Ratio,
+                                           entryP + stopD * LevelTP2Ratio);
+                        }
+                        if (EnableAlerts && _isRealtime)
+                            Alert("STC_CrUp_" + CurrentBar, Priority.High,
+                                  $"SmoothTrendCloud — Cruce LONG {Instrument.FullName}",
+                                  NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert2.wav",
+                                  30, Brushes.LimeGreen, Brushes.Black);
+                    }
                 }
                 if (_hasCrossDownSignal)
                 {
-                    Draw.ArrowDown(this, "CrDn_" + CurrentBar, true, 0,
-                        High[0] + TickSize * 4, Brushes.Red);
-                    if (EnableAlerts && _isRealtime)
-                        Alert("STC_CrDn_" + CurrentBar, Priority.High,
-                              $"SmoothTrendCloud — Cruce SHORT {Instrument.FullName}",
-                              NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert3.wav",
-                              30, Brushes.OrangeRed, Brushes.Black);
+                    if (!horarioOkT1)
+                        LogRechazada("SHORT", "TrendStart", "Horario",
+                                     $"hora={Time[0]:HH:mm}");
+                    else
+                    {
+                        Draw.ArrowDown(this, "CrDn_" + CurrentBar, true, 0,
+                            High[0] + TickSize * 4, Brushes.Red);
+                        if (ShowEntryLevels && _isRealtime)
+                        {
+                            double entryP = Close[0];
+                            double atrP   = CurrentBar >= 20 ? ATR(14)[0] : TickSize * 10;
+                            double stopD  = Math.Max(CloudWidth * 1.5,
+                                                Math.Max(atrP * 1.3, 6 * TickSize));
+                            DibujarNiveles(false, CurrentBar, entryP,
+                                           entryP + stopD,
+                                           entryP - stopD * LevelTP1Ratio,
+                                           entryP - stopD * LevelTP2Ratio);
+                        }
+                        if (EnableAlerts && _isRealtime)
+                            Alert("STC_CrDn_" + CurrentBar, Priority.High,
+                                  $"SmoothTrendCloud — Cruce SHORT {Instrument.FullName}",
+                                  NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert3.wav",
+                                  30, Brushes.OrangeRed, Brushes.Black);
+                    }
                 }
             }
 
@@ -270,20 +332,52 @@ namespace NinjaTrader.NinjaScript.Indicators
             // ── Señales visuales Tipo 2 (CloudPullback para trading manual) ──
             if (ShowType2Arrows)
             {
+                bool horarioOk = !UseTimeFilter || EsHorarioCalidad();
                 if (_touchedCloudFromAbove)
                 {
-                    bool m15Ok = _idxM15 < 0 || !UseM15Confluence || _m15CloudIsUp;
-                    if (m15Ok) EmitirSenalManual("LONG",  CurrentBar, Low[0]  - TickSize * 6);
+                    if (!horarioOk)
+                        LogRechazada("LONG", "CloudPullback", "Horario",
+                                     $"hora={Time[0]:HH:mm}");
+                    else
+                    {
+                        bool m15Ok = _idxM15 < 0 || !UseM15Confluence || _m15CloudIsUp;
+                        if (m15Ok)
+                            EmitirSenalManual("LONG", CurrentBar, Low[0] - TickSize * 6);
+                        else
+                            LogRechazada("LONG", "CloudPullback", "M15",
+                                         $"m15=bajista señal=LONG barras={_barsInCurrentColor}");
+                    }
                 }
                 if (_touchedCloudFromBelow)
                 {
-                    bool m15Ok = _idxM15 < 0 || !UseM15Confluence || !_m15CloudIsUp;
-                    if (m15Ok) EmitirSenalManual("SHORT", CurrentBar, High[0] + TickSize * 6);
+                    if (!horarioOk)
+                        LogRechazada("SHORT", "CloudPullback", "Horario",
+                                     $"hora={Time[0]:HH:mm}");
+                    else
+                    {
+                        bool m15Ok = _idxM15 < 0 || !UseM15Confluence || !_m15CloudIsUp;
+                        if (m15Ok)
+                            EmitirSenalManual("SHORT", CurrentBar, High[0] + TickSize * 6);
+                        else
+                            LogRechazada("SHORT", "CloudPullback", "M15",
+                                         $"m15=alcista señal=SHORT barras={_barsInCurrentColor}");
+                    }
                 }
             }
 
             // ── Dashboard de estado ──────────────────────────────────────────
             if (ShowDashboard) ActualizarDashboard();
+
+            // ── Limpieza de niveles de entrada con más de LEVEL_LOOKBACK barras ──
+            while (_oldLevelBars != null && _oldLevelBars.Count > 0
+                   && CurrentBar - _oldLevelBars.Peek() > LEVEL_LOOKBACK)
+            {
+                int old = _oldLevelBars.Dequeue();
+                RemoveDrawObject($"NLE_{old}");  RemoveDrawObject($"NLS_{old}");
+                RemoveDrawObject($"NLT1_{old}"); RemoveDrawObject($"NLT2_{old}");
+                RemoveDrawObject($"NTE_{old}");  RemoveDrawObject($"NTS_{old}");
+                RemoveDrawObject($"NTT1_{old}"); RemoveDrawObject($"NTT2_{old}");
+            }
         }
 
         // ─── Señal manual Tipo 2 con validación IA opcional ───────────────
@@ -300,6 +394,20 @@ namespace NinjaTrader.NinjaScript.Indicators
                     Draw.ArrowUp(this,   arrowTag, false, 0, price, Brushes.Lime);
                 else
                     Draw.ArrowDown(this, arrowTag, false, 0, price, Brushes.Magenta);
+
+                if (ShowEntryLevels && _isRealtime)
+                {
+                    double entryP = Close[0];
+                    double atrP   = CurrentBar >= 20 ? ATR(14)[0] : TickSize * 10;
+                    double distV  = isLong
+                        ? entryP - (Low[0]  - LevelStopBufferTicks * TickSize)
+                        : (High[0] + LevelStopBufferTicks * TickSize) - entryP;
+                    double stopD  = Math.Max(distV, Math.Max(atrP * 1.3, 6 * TickSize));
+                    DibujarNiveles(isLong, barNum, entryP,
+                                   isLong ? entryP - stopD : entryP + stopD,
+                                   isLong ? entryP + stopD * LevelTP1Ratio : entryP - stopD * LevelTP1Ratio,
+                                   isLong ? entryP + stopD * LevelTP2Ratio : entryP - stopD * LevelTP2Ratio);
+                }
 
                 if (EnableAlerts && _isRealtime)
                 {
@@ -336,6 +444,22 @@ namespace NinjaTrader.NinjaScript.Indicators
             string prov    = AIProvider;
             string apiKey  = AIApiKey;
             TimeSpan hora  = Time[0].TimeOfDay;
+            // Datos para niveles de entrada (capturar antes del Task.Run)
+            bool   showLvls  = ShowEntryLevels;
+            double atrPrice  = CurrentBar >= 20 ? ATR(14)[0] : TickSize * 10;
+            int    stopBuff  = LevelStopBufferTicks;
+            double tp1Ratio  = LevelTP1Ratio;
+            double tp2Ratio  = LevelTP2Ratio;
+            double tickSz    = TickSize;
+            // Datos para log de rechazadas por IA
+            bool   logRej    = LogRejectedSignals;
+            string logPath   = _rejectedLogPath;
+            string tsLog     = Time[0].ToString("yyyy-MM-dd HH:mm:ss");
+            double h_log     = Time[0].TimeOfDay.TotalHours;
+            string sesLog    = h_log >= 9.5  && h_log <= 11.5 ? "apertura"
+                             : h_log >= 14.0 && h_log <= 15.5 ? "tarde-NY"
+                             : h_log >= 11.5 && h_log <= 14.0 ? "mediodia"
+                             : "fuera-horario";
 
             Task.Run(async () =>
             {
@@ -370,8 +494,20 @@ namespace NinjaTrader.NinjaScript.Indicators
 
                         Draw.Text(this, textTag,
                             $"IA {conf * 100:F0}%\n{reason}",
-                            0, price + (isLong ? -TickSize * 12 : TickSize * 12),
+                            0, price + (isLong ? -tickSz * 12 : tickSz * 12),
                             isLong ? Brushes.SpringGreen : Brushes.DeepPink);
+
+                        if (showLvls)
+                        {
+                            double distV = isLong
+                                ? closeP - (lowP  - stopBuff * tickSz)
+                                : (highP + stopBuff * tickSz) - closeP;
+                            double stopD = Math.Max(distV, Math.Max(atrPrice * 1.3, 6 * tickSz));
+                            DibujarNiveles(isLong, barNum, closeP,
+                                           isLong ? closeP - stopD : closeP + stopD,
+                                           isLong ? closeP + stopD * tp1Ratio : closeP - stopD * tp1Ratio,
+                                           isLong ? closeP + stopD * tp2Ratio : closeP - stopD * tp2Ratio);
+                        }
 
                         if (EnableAlerts)
                             Alert($"STC_AI_{direction}_{barNum}", Priority.High,
@@ -384,8 +520,18 @@ namespace NinjaTrader.NinjaScript.Indicators
                         _lastAIDecision = $"✗ {reason}";
                         Draw.Text(this, textTag,
                             $"✗ {reason}",
-                            0, price + (isLong ? -TickSize * 12 : TickSize * 12),
+                            0, price + (isLong ? -tickSz * 12 : tickSz * 12),
                             Brushes.DimGray);
+
+                        if (logRej && !string.IsNullOrEmpty(logPath))
+                        {
+                            string line =
+                                $"{tsLog},{instr},{direction},CloudPullback,IA," +
+                                $"{barsCol},{cwTicks:F1},{rsi:F1},{sesLog}," +
+                                $"\"conf={conf:P0} {reason.Replace("\"", "'")}\"\n";
+                            lock (_logLock)
+                                try { System.IO.File.AppendAllText(logPath, line); } catch { }
+                        }
                     }
                 });
             });
@@ -503,11 +649,17 @@ namespace NinjaTrader.NinjaScript.Indicators
             string conflu = _idxM15 >= 0 && UseM15Confluence
                           ? $" | M15: {m15}" : "";
 
+            string filtros =
+                $"TF:{(UseTimeFilter       ? "✓" : "—")}  " +
+                $"M15:{(UseM15Confluence   ? "✓" : "—")}  " +
+                $"LOG:{(LogRejectedSignals ? "✓" : "—")}";
+
             string text =
                 $"── SmoothTrendCloud ──\n" +
                 $"Nube : {dir} ({_barsInCurrentColor} barras){conflu}\n" +
                 $"Señal: {_lastSignalTime}\n" +
-                $"IA   : {_lastAIDecision}";
+                $"IA   : {_lastAIDecision}\n" +
+                $"Filtros: {filtros}";
 
             Draw.TextFixed(this, "STC_Dashboard", text,
                            TextPosition.TopRight,
@@ -516,6 +668,67 @@ namespace NinjaTrader.NinjaScript.Indicators
                            Brushes.Transparent,
                            new SolidColorBrush(Color.FromArgb(170, 15, 15, 25)),
                            90);
+        }
+
+        // ─── Niveles de entrada/stop/TP en el chart ───────────────────────
+        private void DibujarNiveles(bool isLong, int barNum,
+                                     double entry, double stopP, double tp1P, double tp2P)
+        {
+            if (TickSize <= 0) return;
+            const int lineW = 5; // ancho en barras de las líneas horizontales
+            _oldLevelBars.Enqueue(barNum);
+            double stopT = Math.Abs(entry - stopP) / TickSize;
+            double r1T   = Math.Abs(tp1P  - entry) / TickSize;
+            double r2T   = Math.Abs(tp2P  - entry) / TickSize;
+
+            // Líneas horizontales (5 barras de ancho)
+            Draw.Line(this, $"NLE_{barNum}", lineW, entry, 0, entry, Brushes.WhiteSmoke);
+            Draw.Line(this, $"NLS_{barNum}", lineW, stopP, 0, stopP, Brushes.OrangeRed);
+            Draw.Line(this, $"NLT1_{barNum}", lineW, tp1P,  0, tp1P,  Brushes.LimeGreen);
+            Draw.Line(this, $"NLT2_{barNum}", lineW, tp2P,  0, tp2P,  Brushes.SpringGreen);
+
+            // Etiquetas de precio en cada nivel (en la barra del signal, 1 barra a la izquierda)
+            Draw.Text(this, $"NTE_{barNum}",  $"ENTRADA  {entry:F2}", 1, entry, Brushes.WhiteSmoke);
+            Draw.Text(this, $"NTS_{barNum}",  $"STOP  {stopP:F2}  (-{stopT:F0}t)",
+                      1, stopP, Brushes.OrangeRed);
+            Draw.Text(this, $"NTT1_{barNum}", $"TP1  {tp1P:F2}  (+{r1T:F0}t / 1R)",
+                      1, tp1P,  Brushes.LimeGreen);
+            Draw.Text(this, $"NTT2_{barNum}", $"TP2  {tp2P:F2}  (+{r2T:F0}t / 2R)",
+                      1, tp2P,  Brushes.SpringGreen);
+        }
+
+        // ─── Ventanas de horario de calidad (hora local del chart) ────────
+        // Ventana 1: 10:00–11:30  |  Ventana 2: 14:00–15:30
+        private bool EsHorarioCalidad()
+        {
+            double h = Time[0].TimeOfDay.TotalHours;
+            return (h >= 10.0 && h <= 11.5) || (h >= 14.0 && h <= 15.5);
+        }
+
+        // ─── Log de señales rechazadas (solo en tiempo real) ──────────────
+        private void LogRechazada(string direction, string setupType,
+                                   string reason, string detail = "")
+        {
+            if (!LogRejectedSignals || !_isRealtime || string.IsNullOrEmpty(_rejectedLogPath))
+                return;
+            try
+            {
+                double rsi = CurrentBar >= 20 ? RSI(Input, 14, 3)[0] : 0;
+                double cwT = TickSize > 0 ? CloudWidth / TickSize : 0;
+                double h   = Time[0].TimeOfDay.TotalHours;
+                string ses = h >= 9.5  && h <= 11.5 ? "apertura"
+                           : h >= 14.0 && h <= 15.5 ? "tarde-NY"
+                           : h >= 11.5 && h <= 14.0 ? "mediodia" : "fuera-horario";
+                string line =
+                    $"{Time[0]:yyyy-MM-dd HH:mm:ss}," +
+                    $"{Instrument?.FullName ?? "—"}," +
+                    $"{direction},{setupType},{reason}," +
+                    $"{_barsInCurrentColor},{cwT:F1},{rsi:F1},{ses}," +
+                    $"\"{detail.Replace("\"", "'")}\"\n";
+                lock (_logLock)
+                    System.IO.File.AppendAllText(_rejectedLogPath, line);
+            }
+            catch { }
         }
 
         // ─── Reconstruir brushes con la opacidad actual ────────────────────
@@ -663,5 +876,46 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "Solo muestra señales Tipo 2 si la EMA de 20 períodos en M15 está alineada con la dirección",
                  Order = 8, GroupName = "3. Validación IA")]
         public bool UseM15Confluence { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Filtro horario de calidad",
+                 Description = "Solo muestra señales en 10:00–11:30 y 14:00–15:30 (hora local del chart). Bloquea apertura caótica y mediodía de bajo volumen.",
+                 Order = 9, GroupName = "3. Validación IA")]
+        public bool UseTimeFilter { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Log señales rechazadas (CSV)",
+                 Description = "Guarda en Documentos\\NinjaTrader 8\\STC_rechazadas_YYYYMMDD.csv cada señal bloqueada por horario, M15 o IA",
+                 Order = 10, GroupName = "3. Validación IA")]
+        public bool LogRejectedSignals { get; set; }
+
+        // ─── Grupo 4. Niveles de Entrada ──────────────────────────────────
+
+        [NinjaScriptProperty]
+        [Display(Name = "Mostrar niveles Entrada/Stop/TP",
+                 Description = "Dibuja en el chart las líneas de entrada, stop loss y objetivos al detectar cada señal",
+                 Order = 1, GroupName = "4. Niveles de Entrada")]
+        public bool ShowEntryLevels { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1, 30)]
+        [Display(Name = "Buffer stop (ticks)",
+                 Description = "Ticks por debajo del mínimo (LONG) o encima del máximo (SHORT) para calcular el stop loss",
+                 Order = 2, GroupName = "4. Niveles de Entrada")]
+        public int LevelStopBufferTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 10.0)]
+        [Display(Name = "Ratio TP1 (múltiplo de riesgo)",
+                 Description = "TP1 = distancia_stop × este_valor  (2.0 = 2R, mínimo 2:1)",
+                 Order = 3, GroupName = "4. Niveles de Entrada")]
+        public double LevelTP1Ratio { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(1.0, 20.0)]
+        [Display(Name = "Ratio TP2 (múltiplo de riesgo)",
+                 Description = "TP2 = distancia_stop × este_valor  (4.0 = 4R, extensión de tendencia)",
+                 Order = 4, GroupName = "4. Niveles de Entrada")]
+        public double LevelTP2Ratio { get; set; }
     }
 }

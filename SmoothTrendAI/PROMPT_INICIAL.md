@@ -74,7 +74,7 @@ La nube es alcista cuando `TriggerLine > SmoothTrendLine`.
 
 ### Visualización de la nube
 El relleno entre las dos líneas EMA se dibuja con `Draw.Region` segmentado:
-- Cada segmento de color se cierra con un tag permanente `CS_{startBar}` al cambiar color
+- Cada segmento de color se cierra con tag permanente `CS_{startBar}` al cambiar color
 - El segmento actual se redibuja cada barra con tag `CS_Current`
 - Segmentos > `SEGMENT_LOOKBACK (300)` barras se eliminan con `RemoveDrawObject`
 - `BackBrushes[0]` tinta el fondo de cada barra con el color de la nube
@@ -107,10 +107,70 @@ El relleno entre las dos líneas EMA se dibuja con `Draw.Region` segmentado:
 | `EnableAlerts` | true | Beep + alerta NT8 al detectar señales |
 | `ShowDashboard` | true | Panel de estado en esquina superior derecha |
 | `UseM15Confluence` | false | Filtro: M15 EMA-20 debe estar alineada con la señal |
+| `UseTimeFilter` | false | Solo señales en 10:00–11:30 y 14:00–15:30 hora del chart |
+| `LogRejectedSignals` | true | CSV con cada señal bloqueada (horario / M15 / IA) |
+
+**Grupo "4. Niveles de Entrada":**
+| Propiedad | Default | Descripción |
+|---|---|---|
+| `ShowEntryLevels` | true | Dibuja líneas Entrada/Stop/TP1/TP2 al detectar señal |
+| `LevelStopBufferTicks` | 3 | Ticks de buffer bajo el mínimo (LONG) / sobre el máximo (SHORT) |
+| `LevelTP1Ratio` | 2.0 | TP1 = distancia_stop × ratio (2.0 = 2R) |
+| `LevelTP2Ratio` | 4.0 | TP2 = distancia_stop × ratio (4.0 = 4R) |
+
+**Orden de declaración en el archivo (CRÍTICO para factory call):**
+```
+1:TriggerPeriod  2:SmoothPeriod  3:MinTrendBarsForPullback
+4:RegionOpacity  5:UpTrendColor  6:DownTrendColor  7:ShowSignalArrows
+8:ShowType2Arrows  9:EnableAIValidation  10:AIProvider  11:AIApiKey
+12:AIMinConfidence  13:EnableAlerts  14:ShowDashboard  15:UseM15Confluence
+16:UseTimeFilter  17:LogRejectedSignals
+18:ShowEntryLevels  19:LevelStopBufferTicks  20:LevelTP1Ratio  21:LevelTP2Ratio
+```
+
+### Niveles de entrada visuales (ShowEntryLevels)
+
+Al detectar señal (solo en tiempo real) dibuja 4 líneas horizontales de 5 barras de ancho:
+- `NLE_{bar}` — ENTRADA (blanco) con precio
+- `NLS_{bar}` — STOP (naranja-rojo) con precio y ticks de distancia
+- `NLT1_{bar}` — TP1 (lima) con precio, ticks y "1R"
+- `NLT2_{bar}` — TP2 (verde claro) con precio, ticks y "2R"
+
+**Cálculo del stop:**
+```
+distVela = entry - (Low[0] - LevelStopBufferTicks * TickSize)    # LONG
+stopDist = Max(distVela, Max(ATR(14) * 1.3, 6 * TickSize))       # piso mínimo
+stop     = entry - stopDist
+TP1      = entry + stopDist * LevelTP1Ratio
+TP2      = entry + stopDist * LevelTP2Ratio
+```
+
+**Limpieza automática:** `Queue<int> _oldLevelBars` elimina niveles con más de
+`LEVEL_LOOKBACK = 100` barras de antigüedad en cada `OnBarUpdate`.
+
+### Log de señales rechazadas (LogRejectedSignals)
+
+Archivo: `Documentos\NinjaTrader 8\STC_rechazadas_YYYYMMDD.csv`
+Solo escribe en tiempo real (`_isRealtime`).
+
+Columnas: `Timestamp, Instrumento, Direccion, Tipo, Razon, BarrasEnColor, NubeTicks, RSI, Sesion, Detalle`
+
+Valores de `Razon`:
+- `Horario` — señal fuera de ventanas de calidad
+- `M15` — confluencia M15 no alineada
+- `IA` — modelo rechazó con detalle `conf=74% razón`
+
+### Filtro de horario (UseTimeFilter)
+
+Método `EsHorarioCalidad()` — devuelve true si `Time[0]` cae en:
+- 10:00–11:30 (apertura madura NY)
+- 14:00–15:30 (tarde NY, momentum claro)
+
+Usa hora local del chart. Si el PC está en Colombia (UTC-5 = EST en invierno), coincide directamente con ET.
 
 ### Validación IA en el indicador (trading manual)
 
-El indicador tiene **su propio cliente HTTP** (`static HttpClient _http`) independiente de la estrategia. Esto permite usarlo para trading manual sin necesidad de cargar la estrategia.
+El indicador tiene **su propio cliente HTTP** (`static HttpClient _http`) independiente de la estrategia.
 
 **Flujo al detectar Tipo 2:**
 1. Si `EnableAIValidation = false` o barra histórica → flecha inmediata (lima/magenta)
@@ -119,58 +179,45 @@ El indicador tiene **su propio cliente HTTP** (`static HttpClient _http`) indepe
    - Lanza `Task.Run` en hilo de fondo
    - `ValidarConIAAsync()` llama a Claude Haiku o GPT-4o-mini
    - Al recibir respuesta, actualiza en UI thread con `ChartControl.Dispatcher.InvokeAsync()`
-   - Aprobado: flecha verde + texto `"IA 74%\nrazón"`
-   - Rechazado: texto gris `"✗ razón"`
+   - Aprobado: flecha verde + texto `"IA 74%\nrazón"` + niveles de entrada
+   - Rechazado: texto gris `"✗ razón"` + entrada en CSV de rechazadas
 
-**Punto importante:** capturar TODOS los datos de la barra (`Time[0]`, `Close[0]`, etc.)
-ANTES del `Task.Run()`. Acceder a `Close[0]` dentro del lambda causa error de threading.
+**CRÍTICO — threading:** capturar TODOS los datos de la barra como variables locales
+ANTES del `Task.Run()`. Dentro del lambda solo usar variables capturadas, nunca `Close[0]`.
+Esto incluye: `closeP`, `highP`, `lowP`, `rsi`, `atrTks`, `hora`, `atrPrice`, `tickSz`,
+`tp1Ratio`, `tp2Ratio`, `stopBuff`, `tsLog`, `sesLog`, `logRej`, `logPath`.
 
-**Prompt mejorado (separación reglas vs. juicio):**
-```
-"El CÓDIGO ya verificó: precio tocó el borde de la nube y cerró dentro de la tendencia,
- con mínimo de barras en color requeridas.
- TU JUICIO añade valor en: calidad real de la vela de rechazo,
- contexto de sesión (evitar señales en baja liquidez),
- RSI en zona neutra (35-65), volumen >= 0.8x promedio."
-```
+**Modelos usados:**
+- Claude: `claude-haiku-4-5-20251001` (indicador — rápido, bajo costo)
+- OpenAI: `gpt-4o-mini`
 
-**Payload que envía el indicador:**
+**Payload:**
 ```json
 {
-  "instrument": "NQ 09-26",
-  "direction": "LONG",
-  "sesion": "apertura-NY (alta volatilidad)",
-  "calidad_vela": "rechazo-fuerte",
-  "cloud_width_ticks": 8.5,
-  "bars_in_color": 14,
-  "rsi_14": 54.2,
-  "atr_ticks": 18.0,
-  "volume_ratio": 1.15,
-  "close": 21460.00,
-  "high": 21465.00,
-  "low": 21443.00
+  "direction": "LONG", "sesion": "apertura-NY", "calidad_vela": "rechazo-fuerte",
+  "cloud_width_ticks": 8.5, "bars_in_color": 14, "rsi_14": 54.2,
+  "atr_ticks": 18.0, "volume_ratio": 1.15,
+  "close": 21460.00, "high": 21465.00, "low": 21443.00
 }
 ```
 
-**Respuesta esperada:**
-```json
-{"approved": true, "confidence": 0.78, "reason": "rebote limpio en soporte"}
-```
+**Respuesta esperada:** `{"approved": true, "confidence": 0.78, "reason": "rebote limpio en soporte"}`
 
 ### Dashboard (ShowDashboard)
-Panel `Draw.TextFixed` en `TextPosition.TopRight` que muestra:
+Panel `Draw.TextFixed` en `TextPosition.TopRight`:
 ```
 ── SmoothTrendCloud ──
 Nube : ▲ Alcista (14 barras) | M15: ▲
 Señal: 10:23
 IA   : ✓ LONG 78%
+Filtros: TF:✓  M15:—  LOG:✓
 ```
-Se actualiza cada cierre de barra.
+`TF` = UseTimeFilter | `M15` = UseM15Confluence | `LOG` = LogRejectedSignals
 
 ### Confluencia M15 (UseM15Confluence)
 - En `State.Configure`: `AddDataSeries(BarsPeriodType.Minute, 15)` → `_idxM15 = 1`
 - En `OnBarUpdate` cuando `BarsInProgress == _idxM15`: calcula `_m15CloudIsUp = Close > EMA(BarsArray[1], 20)`
-- En señales Tipo 2: filtra si M15 no está alineado con la dirección de la señal
+- En señales Tipo 2: filtra si M15 no está alineado con la dirección
 
 ### Alertas (EnableAlerts)
 - Tipo 1 cruce LONG → `Alert(..., "Alert2.wav")`
@@ -186,13 +233,12 @@ public class STCIAProviderConverter : System.ComponentModel.TypeConverter
     public override StandardValuesCollection GetStandardValues(...)
         => new StandardValuesCollection(new[] { "Claude", "OpenAI" });
 }
-// Uso en propiedad:
 [TypeConverter(typeof(STCIAProviderConverter))]
 public string AIProvider { get; set; }
 ```
 **IMPORTANTE:** NO usar `enum` para propiedades con dropdown en indicadores NT8.
 El enum definido dentro de `namespace NinjaTrader.NinjaScript.Indicators` no es visible
-desde el código auto-generado de NT8 (genera CS0246). Solución: `string` + `TypeConverter`.
+desde el código auto-generado de NT8 (genera CS0246). Usar `string` + `TypeConverter`.
 
 ---
 
@@ -216,6 +262,7 @@ Salidas principales:
 - `WaveConfidence`: 0.0–1.0
 - `IsFavorableForLong` / `IsFavorableForShort`
 - `Fib_382`, `Fib_618`, `Fib_1272`, `Fib_1618` — niveles desde pivote base
+- `CurrentWaveDirection`: "LONG" | "SHORT" | "BOTH" | "Undefined"
 
 ---
 
@@ -237,7 +284,7 @@ public class STASetupResult {
 **Prioridad:** CloudPullback siempre tiene precedencia sobre TrendStart en la misma barra.
 
 **`RequireVolumeConfirmation` (bool, default: true):**
-Requiere que el volumen de la vela sea ≥ 110% del promedio de 20 barras.
+Requiere volumen de la vela ≥ 110% del promedio de 20 barras.
 Con Range Bars, muchas velas no superan este umbral → desmarcar en backtest si aparecen 0 trades.
 
 ---
@@ -245,9 +292,11 @@ Con Range Bars, muchas velas no superan este umbral → desmarcar en backtest si
 ## MÓDULO 5 — STASignalValidator.cs
 
 Llama a la IA desde la **estrategia** (diferente al validador del indicador).
-- Claude: `claude-sonnet-4-6` (estrategia) vs `claude-haiku-4-5-20251001` (indicador — más rápido)
+- Claude: `claude-sonnet-4-6` (estrategia) vs `claude-haiku-4-5-20251001` (indicador)
 - Timeout 3 s. Fallback: `aiRiskAdjustment = 0.5`, `setupQuality = "low"`.
 - En `State.Historical`: usa `SimularRespuesta()` (sin HTTP) para backtest.
+- JSON: usa `Newtonsoft.Json.Linq` (JObject). `System.Text.Json` no soporta indexador en .NET 4.8.
+- Helper `ExtraerJson()` extrae el JSON si la respuesta contiene texto antes/después.
 
 ---
 
@@ -273,23 +322,20 @@ Clamp: [1, MaxContracts=4]
 - MaxDailyTrades = 5 | MaxConsecutiveLosses = 3
 - MaxTrendStart/día = 3 | MaxCloudPullback/día = 4
 
-**Scale-in (EnableScaleIn):**
-- Entrada inicial = `ceil(totalContracts × 0.60)`
-- Segunda entrada = contratos restantes cuando precio avanza `ScaleInTicks` ticks a favor
-
 ---
 
 ## MÓDULO 7 — STATradeJournal.cs
 
-**Archivos CSV generados:**
+**Archivos CSV generados (estrategia):**
 - `Documents\NinjaTrader 8\logs\SmoothTrendAI_{yyyyMMdd}.csv` — trades ejecutados
 - `Documents\NinjaTrader 8\logs\SmoothTrendAI_rejected_{yyyyMMdd}.csv` — señales rechazadas
+
+**Archivo CSV generado (indicador):**
+- `Documents\NinjaTrader 8\STC_rechazadas_{yyyyMMdd}.csv` — rechazos del indicador (horario/M15/IA)
 
 **DTOs:**
 - `STATradeRecord` — trade completo (35+ campos incluyendo Elliott, IA, R:R)
 - `STARejectedSignalRecord` — señal rechazada (motivo, confianza IA, contexto)
-
-Campos de rechazo (`RejectReason`): `"RSI_Extremo"` | `"VWAP"` | `"TimeFilter"` | `"AI"`
 
 ---
 
@@ -299,72 +345,50 @@ Campos de rechazo (`RejectReason`): `"RSI_Extremo"` | `"VWAP"` | `"TimeFilter"` 
 ```
 BarsInProgress 0 = IDX_MAIN  — principal (Range 100)
 BarsInProgress 1 = IDX_DAILY — diario (contexto Kaufman)
-BarsInProgress 2 = IDX_M15   — M15 (RSI auxiliar, si el principal no es M15)
+BarsInProgress 2 = IDX_M15   — M15 (RSI auxiliar)
 ```
 
-### Propiedades configurables (NinjaScriptProperty)
+### Propiedades configurables
 
-**Grupo 1. Nube:**
-`TriggerPeriod`, `SmoothPeriod`, `MinTrendBarsForPullback`
+**Grupo 1. Nube:** `TriggerPeriod`, `SmoothPeriod`, `MinTrendBarsForPullback`
 
-**Grupo 2. Validación IA:**
-`AIProviderParam` (string), `AIApiKey` (string), `AIMinConfidence` (double), `EnableAIValidation` (bool)
+**Grupo 2. Validación IA:** `AIProviderParam`, `AIApiKey`, `AIMinConfidence`, `EnableAIValidation`
 
-**Grupo 3. Riesgo:**
-`AccountCapital`, `RiskPctPerTrade`, `MaxContracts`, `StopCloudMultiplier`, `StopBufferTicks`,
-`StopATRMultiplier`, `MinStopTicks`, `TrailAfterTP1`,
-`EnableScaleIn` (bool), `ScaleInTicks` (int)
+**Grupo 3. Riesgo:** `AccountCapital`, `RiskPctPerTrade`, `MaxContracts`, `StopCloudMultiplier`,
+`StopBufferTicks`, `StopATRMultiplier`, `MinStopTicks`, `TrailAfterTP1`,
+`EnableScaleIn`, `ScaleInTicks`
 
-**Grupo 4. Sesión:**
-`RestrictToRTH` (bool), `RequireVolumeConfirmation` (bool),
-`UseVWAPFilter` (bool), `UseQualityTimeFilter` (bool), `LogRejectedSignals` (bool)
+**Grupo 4. Sesión:** `RestrictToRTH`, `RequireVolumeConfirmation`,
+`UseVWAPFilter`, `UseQualityTimeFilter`, `LogRejectedSignals`
 
-**Grupo 5. Visualización:**
-`ShowFibLevels` (bool), `ShowElliottPivots` (bool)
-
-### Flujo principal en OnBarUpdate
-```
-1. Si BarsInProgress != IDX_MAIN → return
-2. Reset diario si cambió fecha
-3. Actualizar STADailyContextFilter (necesita >= 3 barras diarias)
-4. Actualizar STAElliottWaveContext
-5. ActualizarVWAP() — cálculo manual diario Σ(TP×Vol)/Σ(Vol)
-6. Dibujar niveles Fibonacci si confianza >= 0.50
-7. Dibujar pivotes Elliott si ShowElliottPivots
-8. Actualizar STASetupClassifier con datos de barra actual
-9. Si hay posición abierta → GestionarPosicionAbierta() y return
-10. Verificar RTH / límites diarios
-11. setup = STASetupClassifier.Evaluate()
-12. Filtro RSI M15 (rechaza si LONG y RSI > 70, o SHORT y RSI < 30)
-13. Filtro horario de calidad (10:00–11:30 / 14:00–15:30 ET)
-14. Filtro VWAP manual (_currentVWAP)
-15. Calcular riesgo preliminar
-16. Construir payload IA
-17. ValidarConIA() → si rechaza, LogRechazo() y return
-18. EjecutarEntrada() con scale-in si habilitado
-```
-
-### Llamada al factory del indicador (13 parámetros actuales)
+### Llamada al factory del indicador (21 parámetros)
 ```csharp
 _cloud = SmoothTrendCloud(
-    TriggerPeriod, SmoothPeriod, MinTrendBarsForPullback,
-    10,                     // RegionOpacity
-    Brushes.Cyan,           // UpTrendColor
-    Brushes.Orange,         // DownTrendColor
-    true,                   // ShowSignalArrows
-    false,                  // ShowType2Arrows  ← estrategia gestiona sus propias entradas
-    false,                  // EnableAIValidation ← estrategia tiene su propio validador
-    "Claude",               // AIProvider
-    "",                     // AIApiKey (vacío — estrategia usa su propia clave)
-    0.60,                   // AIMinConfidence
-    false,                  // EnableAlerts
-    false,                  // ShowDashboard
-    false);                 // UseM15Confluence
+    TriggerPeriod, SmoothPeriod, MinTrendBarsForPullback,   // 1-3
+    10,                     // 4  RegionOpacity
+    Brushes.Cyan,           // 5  UpTrendColor
+    Brushes.Orange,         // 6  DownTrendColor
+    true,                   // 7  ShowSignalArrows
+    false,                  // 8  ShowType2Arrows
+    false,                  // 9  EnableAIValidation
+    "Claude",               // 10 AIProvider
+    "",                     // 11 AIApiKey
+    0.60,                   // 12 AIMinConfidence
+    false,                  // 13 EnableAlerts
+    false,                  // 14 ShowDashboard
+    false,                  // 15 UseM15Confluence
+    false,                  // 16 UseTimeFilter
+    false,                  // 17 LogRejectedSignals
+    false,                  // 18 ShowEntryLevels
+    3,                      // 19 LevelStopBufferTicks
+    2.0,                    // 20 LevelTP1Ratio
+    4.0);                   // 21 LevelTP2Ratio
 ```
 
-**CRÍTICO:** Si se agrega un nuevo `[NinjaScriptProperty]` al indicador, el factory
-cambia de firma y esta llamada debe actualizarse con el parámetro adicional.
-Error resultante: `CS1501 — No overload for method 'SmoothTrendCloud' takes N arguments`.
+**CRÍTICO:** El orden de los parámetros debe coincidir con el orden físico de declaración
+de `[NinjaScriptProperty]` en el archivo del indicador, NO con el atributo `Order` del `[Display]`.
+Error resultante si el orden es incorrecto: `CS1503 — cannot convert from 'X' to 'Y'`.
+Error resultante si faltan parámetros: `CS1501 — No overload for method takes N arguments`.
 
 ---
 
@@ -383,17 +407,21 @@ Error resultante: `CS1501 — No overload for method 'SmoothTrendCloud' takes N 
 5. **Threading en indicadores**: capturar `Close[0]`, `Time[0]`, `High[0]`, `Low[0]`, etc.
    como variables locales ANTES de entrar a un `Task.Run()`. Acceder a series de NT8
    desde un hilo de fondo causa excepciones de acceso concurrente.
+   Los updates al chart desde background thread → `ChartControl.Dispatcher.InvokeAsync()`.
 
 6. **Enums en indicadores**: NO usar tipos enum propios como `[NinjaScriptProperty]`.
    El código auto-generado de NT8 no los encuentra (CS0246).
    Usar `string` + `TypeConverter` para dropdowns.
 
-7. **VWAP manual**: no depender del `VWAP()` built-in de NT8 (puede no estar disponible).
-   Calcular como `Σ(TypicalPrice × Volume) / Σ(Volume)`, reseteando `_vwapDate` al cambiar de día.
+7. **VWAP manual**: no depender del `VWAP()` built-in de NT8.
+   Calcular como `Σ(TypicalPrice × Volume) / Σ(Volume)`, reseteando al cambiar de día.
 
 8. **Multi-timeframe en indicador con M15**: agregar `AddDataSeries(BarsPeriodType.Minute, 15)`
    en `State.Configure`. Manejar `BarsInProgress == _idxM15` al inicio de `OnBarUpdate`
    para calcular datos M15 y hacer `return` inmediatamente.
+
+9. **Factory del indicador**: el orden de parámetros = orden físico en el archivo, no el `Order` del `[Display]`.
+   Agregar siempre propiedades nuevas al FINAL del archivo para que el orden sea predecible.
 
 ---
 
@@ -401,29 +429,25 @@ Error resultante: `CS1501 — No overload for method 'SmoothTrendCloud' takes N 
 
 | Error | Causa | Fix |
 |---|---|---|
-| CS0102 duplicado SmoothTrendCloud | `#region generated code` manual | Eliminar la sección; NT8 la genera sola |
+| CS0102 duplicado SmoothTrendCloud | `#region generated code` manual | Eliminar la sección |
 | CS0246 XmlIgnore | Falta `using System.Xml.Serialization;` | Agregado al indicador |
 | CS0234 PrintTo | `NinjaTrader.Code.PrintTo` incorrecto | `NinjaTrader.NinjaScript.PrintTo` |
-| CS0021 / CS1061 indexer JsonElement | `System.Text.Json` incompleto en .NET 4.8 | `Newtonsoft.Json.Linq` (JObject) |
-| CS7036 SmoothTrendCloud toma N args | Factory genera params para todos los `[NinjaScriptProperty]` | Pasar todos los parámetros en la llamada |
-| CS0246 STCIAProvider not found | Enum en namespace Indicators no visible desde auto-generated | Cambiar a `string` + `TypeConverter` |
-| CS1501 SmoothTrendCloud takes N args | Se agregaron propiedades nuevas al indicador | Actualizar llamada en estrategia con los parámetros nuevos |
+| CS0021 / CS1061 indexer JsonElement | `System.Text.Json` incompleto en .NET 4.8 | `Newtonsoft.Json.Linq` |
+| CS0246 STCIAProvider not found | Enum en namespace Indicators no visible desde auto-generated | `string` + `TypeConverter` |
+| CS1501 SmoothTrendCloud takes N args | Se agregaron `[NinjaScriptProperty]` nuevas | Actualizar llamada con parámetros adicionales |
+| CS1503 cannot convert from X to Y | Parámetros del factory en orden incorrecto | Respetar orden físico de declaración en el archivo |
+| gpt-5.4-mini no existe | Nombre de modelo inválido | Corregir a `gpt-4o-mini` |
 
 ---
 
 ## DIAGNÓSTICO: 0 TRADES EN BACKTEST
 
-Si el Strategy Analyzer muestra 0 trades con fecha desde enero 2026:
+Si el Strategy Analyzer muestra 0 trades:
 
-1. **Desmarcar "Requerir confirm..."** (`RequireVolumeConfirmation`) — en Range Bars, el volumen
-   varía mucho por barra; el filtro de 110% del promedio bloquea casi todos los CloudPullback.
-
-2. **Desmarcar "Filtro VWAP"** temporalmente — verificar si las señales aparecen.
-
-3. **Revisar CSV de rechazos** en `logs\SmoothTrendAI_rejected_*.csv` para ver el motivo exacto.
-
-4. **El Strategy Analyzer agrega las series secundarias (Daily, M15) automáticamente**
-   cuando la estrategia llama `AddDataSeries()` en el código — no hace falta añadirlas manualmente.
+1. **Desmarcar `RequireVolumeConfirmation`** — con Range Bars el volumen varía; el filtro de 110% bloquea casi todo.
+2. **Desmarcar `UseVWAPFilter`** temporalmente.
+3. **Revisar CSV** `logs\SmoothTrendAI_rejected_*.csv` para ver el motivo exacto.
+4. El Strategy Analyzer agrega series secundarias (Daily, M15) automáticamente.
 
 ---
 
@@ -432,28 +456,38 @@ Si el Strategy Analyzer muestra 0 trades con fecha desde enero 2026:
 El indicador `SmoothTrendCloud` puede usarse de forma **completamente independiente**
 de la estrategia, directamente en cualquier chart.
 
-**Configuración para trading manual:**
-1. Cargar `SmoothTrendCloud` en el chart de NQ (Range 100)
-2. Activar **"Mostrar flechas Tipo 2"** → señales CloudPullback visibles
-3. Opcional — activar **"Activar validación IA"** + poner API Key → IA clasifica cada señal
-4. Activar **"Filtro confluencia M15"** → reduce señales contra tendencia mayor
-5. El **Dashboard** muestra estado en tiempo real en la esquina del chart
-6. Las **alertas** suenan al detectar cualquier señal
+**Configuración recomendada:**
+1. Cargar `SmoothTrendCloud` en chart NQ (Range 100)
+2. `ShowType2Arrows = true` — señales CloudPullback visibles
+3. `ShowEntryLevels = true` — líneas de Entrada/Stop/TP1/TP2 al detectar señal
+4. `UseTimeFilter = true` — filtrar señales fuera de horario de calidad
+5. `LogRejectedSignals = true` — CSV con todo lo que se filtró
+6. Opcional: `EnableAIValidation = true` + API Key — IA clasifica cada señal
+7. Opcional: `UseM15Confluence = true` — filtro de tendencia mayor
 
-**Señales:**
-- Flecha verde ↑ lima = CloudPullback LONG (sin IA) | Verde brillante = IA aprobó
-- Flecha magenta ↓ = CloudPullback SHORT (sin IA) | Rosa brillante = IA aprobó
-- Texto gris `"✗ razón"` = IA rechazó
+**Señales visuales:**
+- Flecha ↑ lima = CloudPullback LONG (sin IA)
+- Flecha ↑ verde brillante = CloudPullback LONG aprobado por IA
+- Flecha ↓ magenta = CloudPullback SHORT (sin IA)
+- Flecha ↓ rosa brillante = CloudPullback SHORT aprobado por IA
+- Texto gris `"✗ razón"` = IA rechazó la señal
+- Punto gris = esperando respuesta de la IA
+
+**Dashboard:**
+```
+── SmoothTrendCloud ──
+Nube : ▲ Alcista (14 barras) | M15: ▲
+Señal: 10:23
+IA   : ✓ LONG 78%
+Filtros: TF:✓  M15:—  LOG:✓
+```
 
 ---
 
 ## TAREAS PENDIENTES
 
-- [ ] Compilar y verificar que compila sin errores tras todos los cambios de esta sesión
-- [ ] Probar en tiempo real el lunes (mercado cerrado fines de semana)
-      — verificar que las flechas Tipo 2 aparecen y el dashboard funciona
+- [ ] Probar en tiempo real el lunes — verificar flechas, dashboard y niveles de entrada
+- [ ] Analizar CSV `STC_rechazadas_*.csv` después de la primera sesión para calibrar filtros
 - [ ] Probar backtest con `RequireVolumeConfirmation = false` y `UseVWAPFilter = false`
-      para confirmar que se generan trades
-- [ ] Analizar CSV de rechazos después de primera sesión en vivo
-- [ ] Ajustar `AIMinConfidence` del indicador según resultados (inicio recomendado: 0.60)
+- [ ] Ajustar `AIMinConfidence` según resultados (inicio recomendado: 0.60)
 - [ ] Paper trading mínimo 2 semanas antes de capital real

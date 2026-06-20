@@ -179,7 +179,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                                           0.60,                                      // AIMinConfidence
                                           false,                                     // EnableAlerts
                                           false,                                     // ShowDashboard
-                                          false);                                    // UseM15Confluence
+                                          false,                                     // UseM15Confluence
+                                          false,                                     // UseTimeFilter
+                                          false,                                     // LogRejectedSignals
+                                          false,                                     // ShowEntryLevels
+                                          3,                                         // LevelStopBufferTicks
+                                          2.0,                                       // LevelTP1Ratio
+                                          4.0);                                      // LevelTP2Ratio
 
                 // Filtros
                 _dailyFilter = new STADailyContextFilter();
