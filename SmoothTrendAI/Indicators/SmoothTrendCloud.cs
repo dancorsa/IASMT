@@ -90,6 +90,16 @@ namespace NinjaTrader.NinjaScript.Indicators
         private string _rejectedLogPath;
         private static readonly object _logLock = new object();
 
+        // ─── VWAP intradiario ─────────────────────────────────────────────
+        private double   _vwapNumer;
+        private double   _vwapDenom;
+        private DateTime _vwapDate    = DateTime.MinValue;
+        private double   _currentVWAP;
+
+        // ─── Contador de señales por sesión ───────────────────────────────
+        private int      _senalesHoy;
+        private DateTime _fechaContador = DateTime.MinValue;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -123,11 +133,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 LevelTP2Ratio           = 4.0;
                 UseTimeFilter           = false;
                 LogRejectedSignals      = true;
+                ShowVWAP                = true;
+                TickValue               = 2.0;
 
                 // Plot 0: TriggerLine (EMA rápida)
                 AddPlot(new Stroke(Brushes.DodgerBlue, 2), PlotStyle.Line, "TriggerLine");
                 // Plot 1: SmoothTrendLine (EMA de EMA)
                 AddPlot(new Stroke(Brushes.Gold, 2),       PlotStyle.Line, "SmoothTrendLine");
+                // Plot 2: VWAP intradiario
+                AddPlot(new Stroke(Brushes.Yellow, DashStyleHelper.Dash, 1), PlotStyle.Line, "VWAP");
             }
             else if (State == State.Configure)
             {
@@ -147,6 +161,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 _oldSegmentBars     = new Queue<int>();
                 _oldLevelBars       = new Queue<int>();
                 _isRealtime         = false;
+                _vwapNumer          = 0;
+                _vwapDenom          = 0;
+                _vwapDate           = DateTime.MinValue;
+                _currentVWAP        = 0;
+                _senalesHoy         = 0;
+                _fechaContador      = DateTime.MinValue;
                 RebuildBrushes();
 
                 if (LogRejectedSignals)
@@ -179,6 +199,29 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             if (CurrentBar < Math.Max(TriggerPeriod, SmoothPeriod) + 1)
                 return;
+
+            // ── Reset contador diario ─────────────────────────────────────
+            if (Time[0].Date != _fechaContador)
+            {
+                _senalesHoy    = 0;
+                _fechaContador = Time[0].Date;
+            }
+
+            // ── VWAP intradiario ──────────────────────────────────────────
+            if (Time[0].Date != _vwapDate)
+            {
+                _vwapNumer = 0;
+                _vwapDenom = 0;
+                _vwapDate  = Time[0].Date;
+            }
+            double tp = (High[0] + Low[0] + Close[0]) / 3.0;
+            _vwapNumer  += tp * Volume[0];
+            _vwapDenom  += Volume[0];
+            _currentVWAP = _vwapDenom > 0 ? _vwapNumer / _vwapDenom : Close[0];
+            if (ShowVWAP)
+                Values[2][0] = _currentVWAP;
+            else
+                PlotBrushes[2][0] = Brushes.Transparent;
 
             // ── Calcular TriggerLine (primer EMA) ─────────────────────────
             double triggerVal = EMA(Input, TriggerPeriod)[0];
@@ -251,6 +294,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                      $"hora={Time[0]:HH:mm}");
                     else
                     {
+                        if (_isRealtime) _senalesHoy++;
                         Draw.ArrowUp(this, "CrUp_" + CurrentBar, true, 0,
                             Low[0] - TickSize * 4, Brushes.Lime);
                         if (ShowEntryLevels && _isRealtime)
@@ -278,6 +322,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                                      $"hora={Time[0]:HH:mm}");
                     else
                     {
+                        if (_isRealtime) _senalesHoy++;
                         Draw.ArrowDown(this, "CrDn_" + CurrentBar, true, 0,
                             High[0] + TickSize * 4, Brushes.Red);
                         if (ShowEntryLevels && _isRealtime)
@@ -383,6 +428,7 @@ namespace NinjaTrader.NinjaScript.Indicators
         // ─── Señal manual Tipo 2 con validación IA opcional ───────────────
         private void EmitirSenalManual(string direction, int barNum, double price)
         {
+            if (_isRealtime) _senalesHoy++;
             bool isLong = direction == "LONG";
             string arrowTag = isLong ? $"T2_Up_{barNum}" : $"T2_Dn_{barNum}";
             string textTag  = $"T2_Txt_{barNum}";
@@ -654,10 +700,15 @@ namespace NinjaTrader.NinjaScript.Indicators
                 $"M15:{(UseM15Confluence   ? "✓" : "—")}  " +
                 $"LOG:{(LogRejectedSignals ? "✓" : "—")}";
 
+            string vwapLinea = _currentVWAP > 0
+                ? $"VWAP : {_currentVWAP:F2}  {(Close[0] > _currentVWAP ? "▲ arriba" : "▼ abajo")}"
+                : "VWAP : calculando...";
+
             string text =
                 $"── SmoothTrendCloud ──\n" +
                 $"Nube : {dir} ({_barsInCurrentColor} barras){conflu}\n" +
-                $"Señal: {_lastSignalTime}\n" +
+                $"Señal: {_lastSignalTime}  (hoy: {_senalesHoy})\n" +
+                $"{vwapLinea}\n" +
                 $"IA   : {_lastAIDecision}\n" +
                 $"Filtros: {filtros}";
 
@@ -689,7 +740,9 @@ namespace NinjaTrader.NinjaScript.Indicators
 
             // Etiquetas de precio en cada nivel (en la barra del signal, 1 barra a la izquierda)
             Draw.Text(this, $"NTE_{barNum}",  $"ENTRADA  {entry:F2}", 1, entry, Brushes.WhiteSmoke);
-            Draw.Text(this, $"NTS_{barNum}",  $"STOP  {stopP:F2}  (-{stopT:F0}t)",
+            double riskDollars = stopT * TickValue;
+            Draw.Text(this, $"NTS_{barNum}",
+                      $"STOP  {stopP:F2}  (-{stopT:F0}t / ${riskDollars:F0})",
                       1, stopP, Brushes.OrangeRed);
             Draw.Text(this, $"NTT1_{barNum}", $"TP1  {tp1P:F2}  (+{r1T:F0}t / 1R)",
                       1, tp1P,  Brushes.LimeGreen);
@@ -917,5 +970,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                  Description = "TP2 = distancia_stop × este_valor  (4.0 = 4R, extensión de tendencia)",
                  Order = 4, GroupName = "4. Niveles de Entrada")]
         public double LevelTP2Ratio { get; set; }
+
+        // ─── Grupo 5. VWAP y Sesión (sin [NinjaScriptProperty] — no altera el factory) ──
+
+        [Display(Name = "Mostrar VWAP intradiario",
+                 Description = "Línea amarilla punteada con el VWAP calculado desde el inicio de la sesión",
+                 Order = 1, GroupName = "5. VWAP y Sesión")]
+        public bool ShowVWAP { get; set; }
+
+        [Display(Name = "Valor del tick ($)",
+                 Description = "Valor monetario de 1 tick del instrumento. MNQ=$2 | NQ=$20 | MES=$1.25 | ES=$12.50",
+                 Order = 2, GroupName = "5. VWAP y Sesión")]
+        public double TickValue { get; set; }
+
+        // ─── Accessor del plot VWAP ────────────────────────────────────────
+        [Browsable(false)]
+        [XmlIgnore]
+        public Series<double> VWAPLine => Values[2];
     }
 }
