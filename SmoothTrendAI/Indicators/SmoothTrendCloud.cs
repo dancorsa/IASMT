@@ -208,10 +208,23 @@ namespace NinjaTrader.NinjaScript.Indicators
             // corrompen HasCrossUpSignal / TouchedCloudFromAbove, etc.
             if (BarsInProgress != 0) return;
 
-            // Ejecutar acciones de dibujo pendientes del callback async de IA
+            // Ejecutar acciones de dibujo pendientes del callback async de IA.
+            // Cada lambda coloca objetos en barras históricas (bAgo > 0), por eso
+            // es necesario ForceRefresh() para que NT8 repinte esas posiciones.
+            bool _hadPending = false;
             Action pendingDraw;
             while (_pendingDraws.TryDequeue(out pendingDraw))
-                pendingDraw?.Invoke();
+            {
+                try   { pendingDraw?.Invoke(); }
+                catch (Exception ex)
+                {
+                    NinjaTrader.Code.Output.Process(
+                        $"[STC] Error draw pendiente: {ex.Message}",
+                        NinjaTrader.NinjaScript.PrintTo.OutputTab1);
+                }
+                _hadPending = true;
+            }
+            if (_hadPending) ForceRefresh();
 
             if (CurrentBar < Math.Max(TriggerPeriod, SmoothPeriod) + 1)
                 return;
