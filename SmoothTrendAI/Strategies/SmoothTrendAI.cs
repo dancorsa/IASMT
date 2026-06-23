@@ -345,7 +345,15 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (RestrictToRTH && !EsHorarioRTH()) return;
             if (!_riskManager.CanTrade()) return;
 
-            if (!setup.IsValidSetup) return;
+            if (!setup.IsValidSetup)
+            {
+                // Diagnóstico: imprime estado cada 100 barras para verificar que las señales llegan
+                if (CurrentBar % 100 == 0)
+                    Print($"[STA-DIAG] Bar={CurrentBar} CX↑={_cloud.HasCrossUpSignal} CX↓={_cloud.HasCrossDownSignal} Touch↑={_cloud.TouchedCloudFromAbove} Touch↓={_cloud.TouchedCloudFromBelow} DirDiaria={_dailyFilter.AllowedDirection}");
+                return;
+            }
+
+            Print($"[STA] Setup VÁLIDO: {setup.SetupType} {setup.Direction} conf={setup.BaseConfidence:F2} {Time[0]:HH:mm}");
 
             // Verificar límite específico del tipo de setup
             if (!_riskManager.CanTrade(setup.SetupType)) return;

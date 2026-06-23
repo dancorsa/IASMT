@@ -202,6 +202,12 @@ namespace NinjaTrader.NinjaScript.Indicators
                 return;
             }
 
+            // Ignorar cualquier serie secundaria adicional (ej. Daily o M15 que
+            // la estrategia embebedora haya registrado con AddDataSeries).
+            // Sin este guard, esas barras resetean las señales del cloud y
+            // corrompen HasCrossUpSignal / TouchedCloudFromAbove, etc.
+            if (BarsInProgress != 0) return;
+
             // Ejecutar acciones de dibujo pendientes del callback async de IA
             Action pendingDraw;
             while (_pendingDraws.TryDequeue(out pendingDraw))
