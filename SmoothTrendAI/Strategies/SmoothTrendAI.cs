@@ -28,6 +28,7 @@ using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.NinjaScript.DrawingTools;
+using NinjaTrader.Gui.Tools;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Strategies
