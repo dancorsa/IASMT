@@ -642,6 +642,16 @@ namespace NinjaTrader.NinjaScript.Strategies
                     isLong ? Low[0] - TickSize * 24 : High[0] + TickSize * 24,
                     Brushes.Yellow);
 
+            // Niveles TP1 y TP2 visibles en el chart
+            Draw.HorizontalLine(this, "STA_TP1", risk.Target1Price,
+                Brushes.Lime, DashStyleHelper.Dash, 2);
+            Draw.HorizontalLine(this, "STA_TP2", risk.Target2Price,
+                Brushes.DodgerBlue, DashStyleHelper.Dash, 1);
+            Draw.Text(this, "STA_TP1_lbl", $"TP1 {risk.Target1Price:F2}",
+                0, risk.Target1Price + (isLong ? TickSize * 2 : -TickSize * 2), Brushes.Lime);
+            Draw.Text(this, "STA_TP2_lbl", $"TP2 {risk.Target2Price:F2}",
+                0, risk.Target2Price + (isLong ? TickSize * 2 : -TickSize * 2), Brushes.DodgerBlue);
+
             Print($"[STA] ENTRADA {setup.Direction} | {setup.SetupType} | " +
                   $"Entry={Close[0]:F2} Stop={risk.StopPrice:F2} " +
                   $"TP1={risk.Target1Price:F2} TP2={risk.Target2Price:F2} " +
@@ -787,6 +797,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             Draw.Text(this, $"X_{CurrentBar}", $"[{razon}]", 0,
                 isLong ? High[0] + TickSize * 6 : Low[0] - TickSize * 6,
                 Brushes.Silver);
+
+            // Limpiar líneas de TP al cerrar
+            RemoveDrawObject("STA_TP1");
+            RemoveDrawObject("STA_TP2");
+            RemoveDrawObject("STA_TP1_lbl");
+            RemoveDrawObject("STA_TP2_lbl");
 
             Print($"[STA] SALIDA {razon} | PnL={pnlTicks:F1}t (${pnlUsd:F2})");
 
