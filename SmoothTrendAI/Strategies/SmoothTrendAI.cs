@@ -544,8 +544,13 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 SetStopLoss(isLongEntry ? "STA_Long" : "STA_Short",
                             CalculationMode.Price, risk.StopPrice, false);
+                SetProfitTarget(isLongEntry ? "STA_Long" : "STA_Short",
+                                CalculationMode.Price, risk.Target1Price);
                 if (_scaleInContracts > 0)
+                {
                     SetStopLoss("STA_ScaleIn", CalculationMode.Price, risk.StopPrice, false);
+                    SetProfitTarget("STA_ScaleIn", CalculationMode.Price, risk.Target2Price);
+                }
 
                 if (isLongEntry) EnterLong (initCtrs, "STA_Long");
                 else             EnterShort(initCtrs, "STA_Short");
@@ -559,6 +564,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _mainEntryContracts = risk.Contracts;
                 SetStopLoss(isLongEntry ? "STA_Long" : "STA_Short",
                             CalculationMode.Price, risk.StopPrice, false);
+                SetProfitTarget(isLongEntry ? "STA_Long" : "STA_Short",
+                                CalculationMode.Price, risk.Target1Price);
 
                 if (isLongEntry) EnterLong (risk.Contracts, "STA_Long");
                 else             EnterShort(risk.Contracts, "STA_Short");
