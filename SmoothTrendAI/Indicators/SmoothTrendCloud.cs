@@ -1,5 +1,6 @@
 #region Using declarations
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
@@ -81,6 +82,9 @@ namespace NinjaTrader.NinjaScript.Indicators
         private bool   _isRealtime;
         private string _lastAIDecision = "—";
         private string _lastSignalTime = "—";
+        // Cola thread-safe: las acciones de dibujo del callback async se encolan
+        // aquí y se ejecutan en el próximo OnBarUpdate (contexto NT8 correcto).
+        private readonly ConcurrentQueue<Action> _pendingDraws = new ConcurrentQueue<Action>();
 
         // ─── Confluencia M15 ───────────────────────────────────────────────
         private bool _m15CloudIsUp;
@@ -110,7 +114,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                 IsOverlay    = true;
                 DisplayInDataBox = true;
                 ScaleJustification = NinjaTrader.Gui.Chart.ScaleJustification.Right;
-                IsSuspendedWhileInactive = true;
+                IsSuspendedWhileInactive = false;
 
                 TriggerPeriod           = 12;
                 SmoothPeriod            = 12;
@@ -197,6 +201,11 @@ namespace NinjaTrader.NinjaScript.Indicators
                     _m15CloudIsUp = Closes[_idxM15][0] > EMA(BarsArray[_idxM15], 20)[0];
                 return;
             }
+
+            // Ejecutar acciones de dibujo pendientes del callback async de IA
+            Action pendingDraw;
+            while (_pendingDraws.TryDequeue(out pendingDraw))
+                pendingDraw?.Invoke();
 
             if (CurrentBar < Math.Max(TriggerPeriod, SmoothPeriod) + 1)
                 return;
@@ -533,20 +542,27 @@ namespace NinjaTrader.NinjaScript.Indicators
                         NinjaTrader.NinjaScript.PrintTo.OutputTab1);
                 }
 
-                ChartControl?.Dispatcher?.InvokeAsync(() =>
+                // Encolar el dibujo para el próximo OnBarUpdate (contexto NT8 correcto).
+                // barsAgo se calcula en el momento de ejecución para ubicar el objeto
+                // en la barra de señal aunque hayan cerrado barras durante la espera.
+                bool   approvedCap  = approved;
+                double confCap      = conf;
+                string reasonCap    = reason;
+                _pendingDraws.Enqueue(() =>
                 {
+                    int bAgo = Math.Max(0, CurrentBar - barNum);
                     RemoveDrawObject(waitTag);
-                    if (approved)
+                    if (approvedCap)
                     {
-                        _lastAIDecision = $"✓ {direction} {conf * 100:F0}%";
+                        _lastAIDecision = $"✓ {direction} {confCap * 100:F0}%";
                         if (isLong)
-                            Draw.ArrowUp(this,   arrowTag, false, 0, price, Brushes.SpringGreen);
+                            Draw.ArrowUp(this,   arrowTag, false, bAgo, price, Brushes.SpringGreen);
                         else
-                            Draw.ArrowDown(this, arrowTag, false, 0, price, Brushes.DeepPink);
+                            Draw.ArrowDown(this, arrowTag, false, bAgo, price, Brushes.DeepPink);
 
                         Draw.Text(this, textTag,
-                            $"IA {conf * 100:F0}%\n{reason}",
-                            0, price + (isLong ? -tickSz * 12 : tickSz * 12),
+                            $"IA {confCap * 100:F0}%\n{reasonCap}",
+                            bAgo, price + (isLong ? -tickSz * 12 : tickSz * 12),
                             isLong ? Brushes.SpringGreen : Brushes.DeepPink);
 
                         if (showLvls)
@@ -558,21 +574,22 @@ namespace NinjaTrader.NinjaScript.Indicators
                             DibujarNiveles(isLong, barNum, closeP,
                                            isLong ? closeP - stopD : closeP + stopD,
                                            isLong ? closeP + stopD * tp1Ratio : closeP - stopD * tp1Ratio,
-                                           isLong ? closeP + stopD * tp2Ratio : closeP - stopD * tp2Ratio);
+                                           isLong ? closeP + stopD * tp2Ratio : closeP - stopD * tp2Ratio,
+                                           bAgo);
                         }
 
                         if (EnableAlerts)
                             Alert($"STC_AI_{direction}_{barNum}", Priority.High,
-                                  $"IA aprueba — CloudPullback {direction} {conf*100:F0}%",
+                                  $"IA aprueba — CloudPullback {direction} {confCap*100:F0}%",
                                   NinjaTrader.Core.Globals.InstallDir + @"\sounds\Alert1.wav",
                                   30, isLong ? Brushes.LimeGreen : Brushes.DeepPink, Brushes.Black);
                     }
                     else
                     {
-                        _lastAIDecision = $"✗ {reason}";
+                        _lastAIDecision = $"✗ {reasonCap}";
                         Draw.Text(this, textTag,
-                            $"✗ {reason}",
-                            0, price + (isLong ? -tickSz * 12 : tickSz * 12),
+                            $"✗ {reasonCap}",
+                            bAgo, price + (isLong ? -tickSz * 12 : tickSz * 12),
                             Brushes.DimGray);
 
                         if (logRej && !string.IsNullOrEmpty(logPath))
@@ -580,7 +597,7 @@ namespace NinjaTrader.NinjaScript.Indicators
                             string line =
                                 $"{tsLog},{instr},{direction},CloudPullback,IA," +
                                 $"{barsCol},{cwTicks:F1},{rsi:F1},{sesLog}," +
-                                $"\"conf={conf:P0} {reason.Replace("\"", "'")}\"\n";
+                                $"\"conf={confCap:P0} {reasonCap.Replace("\"", "'")}\"\n";
                             lock (_logLock)
                                 try { System.IO.File.AppendAllText(logPath, line); } catch { }
                         }
@@ -728,8 +745,12 @@ namespace NinjaTrader.NinjaScript.Indicators
         }
 
         // ─── Niveles de entrada/stop/TP en el chart ───────────────────────
+        // barsAgoOffset: cuántas barras han pasado desde la barra de señal.
+        // Cuando se llama desde OnBarUpdate síncronamente = 0.
+        // Cuando se llama desde la cola de pendientes = CurrentBar - barNum.
         private void DibujarNiveles(bool isLong, int barNum,
-                                     double entry, double stopP, double tp1P, double tp2P)
+                                     double entry, double stopP, double tp1P, double tp2P,
+                                     int barsAgoOffset = 0)
         {
             if (TickSize <= 0) return;
             const int lineW = 5; // ancho en barras de las líneas horizontales
@@ -738,22 +759,26 @@ namespace NinjaTrader.NinjaScript.Indicators
             double r1T   = Math.Abs(tp1P  - entry) / TickSize;
             double r2T   = Math.Abs(tp2P  - entry) / TickSize;
 
-            // Líneas horizontales (5 barras de ancho)
-            Draw.Line(this, $"NLE_{barNum}", lineW, entry, 0, entry, Brushes.WhiteSmoke);
-            Draw.Line(this, $"NLS_{barNum}", lineW, stopP, 0, stopP, Brushes.OrangeRed);
-            Draw.Line(this, $"NLT1_{barNum}", lineW, tp1P,  0, tp1P,  Brushes.LimeGreen);
-            Draw.Line(this, $"NLT2_{barNum}", lineW, tp2P,  0, tp2P,  Brushes.SpringGreen);
+            int endB   = barsAgoOffset;
+            int startB = endB + lineW;
+            int textB  = endB + 1;
 
-            // Etiquetas de precio en cada nivel (en la barra del signal, 1 barra a la izquierda)
-            Draw.Text(this, $"NTE_{barNum}",  $"ENTRADA  {entry:F2}", 1, entry, Brushes.WhiteSmoke);
+            // Líneas horizontales (5 barras de ancho desde la barra de señal)
+            Draw.Line(this, $"NLE_{barNum}",  startB, entry, endB, entry, Brushes.WhiteSmoke);
+            Draw.Line(this, $"NLS_{barNum}",  startB, stopP, endB, stopP, Brushes.OrangeRed);
+            Draw.Line(this, $"NLT1_{barNum}", startB, tp1P,  endB, tp1P,  Brushes.LimeGreen);
+            Draw.Line(this, $"NLT2_{barNum}", startB, tp2P,  endB, tp2P,  Brushes.SpringGreen);
+
+            // Etiquetas de precio en cada nivel
+            Draw.Text(this, $"NTE_{barNum}",  $"ENTRADA  {entry:F2}", textB, entry, Brushes.WhiteSmoke);
             double riskDollars = stopT * TickValue;
             Draw.Text(this, $"NTS_{barNum}",
                       $"STOP  {stopP:F2}  (-{stopT:F0}t / ${riskDollars:F0})",
-                      1, stopP, Brushes.OrangeRed);
+                      textB, stopP, Brushes.OrangeRed);
             Draw.Text(this, $"NTT1_{barNum}", $"TP1  {tp1P:F2}  (+{r1T:F0}t / 1R)",
-                      1, tp1P,  Brushes.LimeGreen);
+                      textB, tp1P,  Brushes.LimeGreen);
             Draw.Text(this, $"NTT2_{barNum}", $"TP2  {tp2P:F2}  (+{r2T:F0}t / 2R)",
-                      1, tp2P,  Brushes.SpringGreen);
+                      textB, tp2P,  Brushes.SpringGreen);
         }
 
         // ─── Ventanas de horario de calidad (hora local del chart) ────────
