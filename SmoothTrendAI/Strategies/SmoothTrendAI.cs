@@ -28,7 +28,6 @@ using NinjaTrader.Gui.Chart;
 using NinjaTrader.NinjaScript;
 using NinjaTrader.NinjaScript.Indicators;
 using NinjaTrader.NinjaScript.DrawingTools;
-using NinjaTrader.Gui.Tools;
 #endregion
 
 namespace NinjaTrader.NinjaScript.Strategies
@@ -141,8 +140,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             else if (State == State.Configure)
             {
                 // Líneas de la nube visibles en el chart de la estrategia
-                AddPlot(new Stroke(Brushes.DodgerBlue, 2), PlotStyle.Line, "TriggerLine");
-                AddPlot(new Stroke(Brushes.Gold,        2), PlotStyle.Line, "SmoothTrendLine");
+                AddPlot(Brushes.DodgerBlue, PlotStyle.Line, "TriggerLine");
+                AddPlot(Brushes.Gold,       PlotStyle.Line, "SmoothTrendLine");
 
                 // Serie diaria para contexto Kaufman
                 AddDataSeries(BarsPeriodType.Day, 1);
