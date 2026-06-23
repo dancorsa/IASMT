@@ -82,6 +82,10 @@ namespace NinjaTrader.NinjaScript.Strategies
         private int    _scaleInContracts;
         private int    _mainEntryContracts;
 
+        // ─── Nube visual (plots) ────────────────────────────────────────────
+        private SolidColorBrush _cloudUpBrush;
+        private SolidColorBrush _cloudDownBrush;
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
@@ -89,6 +93,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Description = "SmoothTrendAI — Nube doble EMA + Kaufman + Elliott + validación IA";
                 Name        = "SmoothTrendAI";
                 Calculate   = Calculate.OnBarClose;
+                IsOverlay   = true;
                 BarsRequiredToTrade = 30;
                 IsExitOnSessionCloseStrategy  = true;
                 ExitOnSessionCloseSeconds     = 30;
@@ -122,6 +127,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 LogRejectedSignals        = true;
 
                 // Visualización adicional
+                ShowCloudInStrategy    = true;
                 ShowFibLevels          = true;
                 ShowElliottPivots      = false;
                 ShowStrategyDashboard  = true;
@@ -133,6 +139,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             else if (State == State.Configure)
             {
+                // Líneas de la nube visibles en el chart de la estrategia
+                AddPlot(new Stroke(Brushes.DodgerBlue, 2), PlotStyle.Line, "TriggerLine");
+                AddPlot(new Stroke(Brushes.Gold,        2), PlotStyle.Line, "SmoothTrendLine");
+
                 // Serie diaria para contexto Kaufman
                 AddDataSeries(BarsPeriodType.Day, 1);
 
@@ -210,6 +220,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     RequireVolumeConfirmation = RequireVolumeConfirmation
                 };
 
+                // Brushes para el fondo de barra de la nube
+                _cloudUpBrush   = new SolidColorBrush(Color.FromArgb(28, 0, 180, 255));
+                _cloudDownBrush = new SolidColorBrush(Color.FromArgb(28, 255, 120, 0));
+                _cloudUpBrush.Freeze();
+                _cloudDownBrush.Freeze();
+
                 _journal.Open(Instrument.FullName);
                 _journal.OpenRejectedLog();
             }
@@ -225,6 +241,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Solo procesar la barra principal
             if (BarsInProgress != IDX_MAIN) return;
             if (CurrentBar < BarsRequiredToTrade) return;
+
+            // ── Nube visual: líneas + fondo de barra ─────────────────────────
+            if (ShowCloudInStrategy && _cloud != null && _cloud.TriggerValue > 0)
+            {
+                Values[0][0]   = _cloud.TriggerValue;
+                Values[1][0]   = _cloud.SmoothValue;
+                BackBrushes[0] = _cloud.CurrentCloudColor == "Up" ? _cloudUpBrush : _cloudDownBrush;
+            }
 
             if (_positionOpen && Position.MarketPosition == MarketPosition.Flat)
             {
@@ -972,6 +996,9 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // ── Visualización adicional ───────────────────────────────────────
         [NinjaScriptProperty]
+        [Display(Name = "Mostrar nube en chart", Order = 0, GroupName = "5. Visualización")]
+        public bool ShowCloudInStrategy { get; set; }
+
         [Display(Name = "Mostrar niveles Fibonacci en chart", Order = 1, GroupName = "5. Visualización")]
         public bool ShowFibLevels { get; set; }
 
