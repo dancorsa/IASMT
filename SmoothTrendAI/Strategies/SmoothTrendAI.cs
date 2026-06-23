@@ -77,6 +77,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime _vwapDate    = DateTime.MinValue;
         private double   _currentVWAP;
 
+        // ─── Cooldown anti-señales-duplicadas ──────────────────────────────
+        private int _lastSetupBar = -999;
+
         // ─── Estado de scale-in ────────────────────────────────────────────
         private bool   _scaleInPending;
         private double _scaleInTriggerPrice;
@@ -126,6 +129,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseVWAPFilter             = true;
                 UseQualityTimeFilter      = false;
                 LogRejectedSignals        = true;
+                SetupCooldownBars         = 5;
 
                 // Visualización adicional
                 ShowCloudInStrategy    = true;
@@ -355,6 +359,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             Print($"[STA] Setup VÁLIDO: {setup.SetupType} {setup.Direction} conf={setup.BaseConfidence:F2} {Time[0]:HH:mm}");
+
+            // Cooldown: ignorar señales repetidas mientras el precio roza la nube
+            if (SetupCooldownBars > 0 && CurrentBar - _lastSetupBar < SetupCooldownBars) return;
+            _lastSetupBar = CurrentBar;
 
             // Verificar límite específico del tipo de setup
             if (!_riskManager.CanTrade(setup.SetupType)) return;
@@ -1002,6 +1010,11 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty]
         [Display(Name = "Registrar señales rechazadas en CSV", Order = 5, GroupName = "4. Sesión")]
         public bool LogRejectedSignals { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 20)]
+        [Display(Name = "Cooldown barras tras setup (0=desactivado)", Order = 6, GroupName = "4. Sesión")]
+        public int SetupCooldownBars { get; set; }
 
         // ── Visualización adicional ───────────────────────────────────────
         [NinjaScriptProperty]
