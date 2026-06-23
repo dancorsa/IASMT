@@ -67,6 +67,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         private DateTime _lastDailyReset = DateTime.MinValue;
         private bool     _usesM15Secondary;
 
+        // ─── Estado del tablero de filtros ─────────────────────────────────
+        private string _dashLastAiResult = "—  (sin señal aún)";
+
         // ─── VWAP acumulado (calculado manualmente, sin dependencia de terceros) ──
         private double   _vwapSumPV;
         private double   _vwapSumV;
@@ -119,8 +122,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 LogRejectedSignals        = true;
 
                 // Visualización adicional
-                ShowFibLevels     = true;
-                ShowElliottPivots = false;
+                ShowFibLevels          = true;
+                ShowElliottPivots      = false;
+                ShowStrategyDashboard  = true;
+                DashboardPosition      = TextPosition.TopRight;
 
                 // Scale-in
                 EnableScaleIn = false;
@@ -299,6 +304,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Volume[0], _avgVolume20
             );
 
+            // ── Clasificar setup (antes de filtros para poder mostrarlo en el tablero)
+            var setup = _setupClassifier.Evaluate();
+
+            // ── Tablero de filtros (se dibuja siempre, con o sin señal) ───
+            DibujarDashboard(setup);
+
             // ── Gestión de posición abierta (máxima prioridad) ────────────
             if (_positionOpen)
             {
@@ -310,8 +321,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (RestrictToRTH && !EsHorarioRTH()) return;
             if (!_riskManager.CanTrade()) return;
 
-            // ── Clasificar setup ───────────────────────────────────────────
-            var setup = _setupClassifier.Evaluate();
             if (!setup.IsValidSetup) return;
 
             // Verificar límite específico del tipo de setup
@@ -415,13 +424,35 @@ namespace NinjaTrader.NinjaScript.Strategies
             STAAIValidationResult aiResult;
             try
             {
-                aiResult = Task.Run(() =>
-                    _validator.ValidateAsync(payload, isHistorical)).Result;
+                var aiTask = Task.Run(() =>
+                    _validator.ValidateAsync(payload, isHistorical));
+                // Esperar máximo 12s; si no llega → fallback conservador
+                if (!aiTask.Wait(TimeSpan.FromSeconds(12)))
+                {
+                    aiResult = new STAAIValidationResult
+                    {
+                        Approve        = false,
+                        Confidence     = 0,
+                        Reason         = "Timeout estrategia — señal descartada",
+                        RiskAdjustment = 0.50,
+                        SetupQuality   = "low",
+                        IsTimeout      = true
+                    };
+                }
+                else
+                {
+                    aiResult = aiTask.Result;
+                }
             }
             catch
             {
                 return; // Error irrecuperable → skip esta barra
             }
+
+            // ── Actualizar tablero con resultado de IA ────────────────────
+            _dashLastAiResult = aiResult.Approve && aiResult.Confidence >= AIMinConfidence
+                ? $"✓  {setup.Direction}  {aiResult.Confidence:P0}  {aiResult.SetupQuality}"
+                : $"✗  {aiResult.Confidence:P0}  {aiResult.Reason?.Substring(0, Math.Min(40, aiResult.Reason?.Length ?? 0))}";
 
             // ── Dibujar X si la IA rechaza ────────────────────────────────
             if (!aiResult.Approve || aiResult.Confidence < AIMinConfidence)
@@ -948,6 +979,12 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Mostrar pivotes Elliott en chart", Order = 2, GroupName = "5. Visualización")]
         public bool ShowElliottPivots { get; set; }
 
+        [Display(Name = "Mostrar tablero de filtros", Order = 3, GroupName = "5. Visualización")]
+        public bool ShowStrategyDashboard { get; set; }
+
+        [Display(Name = "Posición del tablero", Order = 4, GroupName = "5. Visualización")]
+        public TextPosition DashboardPosition { get; set; }
+
         // ── Scale-in ─────────────────────────────────────────────────────
         [NinjaScriptProperty]
         [Display(Name = "Entrada escalonada (60% + 40%)", Order = 9, GroupName = "3. Riesgo")]
@@ -956,5 +993,91 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(2, 30)]
         [Display(Name = "Ticks de avance para scale-in", Order = 10, GroupName = "3. Riesgo")]
         public int ScaleInTicks { get; set; }
+
+        // ─── Tablero de filtros en tiempo real ────────────────────────────
+        private void DibujarDashboard(STASetupResult setup)
+        {
+            if (!ShowStrategyDashboard) return;
+
+            string V = "✓"; string X = "✗"; string NA = "—";
+
+            // Señal actual
+            string senal = setup.IsValidSetup
+                ? $"{setup.SetupType}  {setup.Direction}"
+                : "Ninguna";
+
+            // Volumen
+            double volRatio = _avgVolume20 > 0 ? Volume[0] / _avgVolume20 : 0;
+            bool   volOk    = !RequireVolumeConfirmation || volRatio >= 1.10;
+            string volStr   = RequireVolumeConfirmation
+                ? $"{(volOk ? V : X)}  {volRatio:F2}x  (mín 1.10x)"
+                : $"{NA}  desactivado";
+
+            // RSI
+            double rsi    = ObtenerRsiM15();
+            bool   rsiOkL = rsi <= 70;
+            bool   rsiOkS = rsi >= 30;
+            string rsiStr = $"LONG {(rsiOkL ? V : X)}  SHORT {(rsiOkS ? V : X)}  [{rsi:F1}]";
+
+            // Horario
+            bool   timeOk  = !UseQualityTimeFilter || EsHorarioCalidad();
+            string timeStr = UseQualityTimeFilter
+                ? $"{(timeOk ? V : X)}  {Time[0]:HH:mm} ET  (10-11:30 / 14-15:30)"
+                : $"{NA}  desactivado";
+
+            // VWAP
+            bool   vwapOkL = !UseVWAPFilter || _currentVWAP <= 0 || Close[0] >= _currentVWAP;
+            bool   vwapOkS = !UseVWAPFilter || _currentVWAP <= 0 || Close[0] <= _currentVWAP;
+            string vwapStr = UseVWAPFilter && _currentVWAP > 0
+                ? $"LONG {(vwapOkL ? V : X)}  SHORT {(vwapOkS ? V : X)}  VWAP={_currentVWAP:F2}"
+                : $"{NA}  desactivado";
+
+            // Contexto diario
+            string ctxStr;
+            if (!_dailyFilter.IsInitialized)
+            {
+                ctxStr = $"— cargando... (barras diarias disponibles: {CurrentBars[IDX_DAILY]})";
+            }
+            else
+            {
+                bool dirOkL = _dailyFilter.IsDirectionAllowed("LONG");
+                bool dirOkS = _dailyFilter.IsDirectionAllowed("SHORT");
+                ctxStr = $"LONG {(dirOkL ? V : X)}  SHORT {(dirOkS ? V : X)}  [{_dailyFilter.MarketContext}]";
+            }
+
+            // Riesgo
+            bool   riskOk  = _riskManager.CanTrade();
+            double dailyPnl = SystemPerformance.RealTimeTrades.TradesPerformance.Currency.CumProfit;
+            string riskStr  = $"{(riskOk ? V : X)}  P&L hoy: ${dailyPnl:F0}";
+
+            // IA
+            string iaStr = !EnableAIValidation
+                ? $"{NA}  desactivada"
+                : _dashLastAiResult;
+
+            // Posición
+            string posStr = _positionOpen
+                ? $"{_activeDirection}  {Position.Quantity}c  entry={_activeEntryPrice:F2}"
+                : "FLAT";
+
+            string txt =
+                "── SmoothTrendAI ────────────────────────\n"  +
+                $" Señal   : {senal}\n"                         +
+                "─────────────────────────────────────────\n"  +
+                $" Volumen : {volStr}\n"                        +
+                $" RSI     : {rsiStr}\n"                        +
+                $" Horario : {timeStr}\n"                       +
+                $" VWAP    : {vwapStr}\n"                       +
+                $" Contexto: {ctxStr}\n"                        +
+                $" Riesgo  : {riskStr}\n"                       +
+                $" IA      : {iaStr}\n"                         +
+                "─────────────────────────────────────────\n"  +
+                $" Posición: {posStr}\n";
+
+            Draw.TextFixed(this, "STA_Dashboard", txt, DashboardPosition,
+                Brushes.White,
+                new NinjaTrader.Gui.Tools.SimpleFont("Courier New", 10),
+                Brushes.Transparent, Brushes.Black, 80);
+        }
     }
 }

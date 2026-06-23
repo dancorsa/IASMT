@@ -28,6 +28,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         // "LONG" | "SHORT" | "BOTH" | "NONE"
         public string AllowedDirection { get; private set; } = "BOTH";
 
+        // ─── Estado de inicialización ──────────────────────────────────────
+        public bool IsInitialized { get; private set; }
+
         // ─── Sesgo estadístico ─────────────────────────────────────────────
         public int  ConsecutiveDirectionDays { get; private set; }
         public bool HasStrongDirectionalBias { get; private set; }
@@ -54,7 +57,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             _closeD1 = dailyClose1;
             _closeD2 = dailyClose2;
             _closeD3 = dailyClose3;
-            _initialized = true;
+            _initialized  = true;
+            IsInitialized = true;
 
             ClasificarContexto(currentPrice);
             ContarDiasConsecutivos();
@@ -126,7 +130,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         /// <summary>Verifica si la dirección dada está permitida hoy.</summary>
         public bool IsDirectionAllowed(string direction)
         {
-            if (!_initialized)       return false;
+            if (!_initialized)       return true;  // sin datos diarios → permitir ambas direcciones
             if (AllowedDirection == "NONE") return false;
             if (AllowedDirection == "BOTH") return true;
             return AllowedDirection == direction;

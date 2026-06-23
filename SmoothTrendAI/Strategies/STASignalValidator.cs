@@ -114,7 +114,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         public void Initialize()
         {
-            _http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
             _http.DefaultRequestHeaders.Accept.Add(
                 new MediaTypeWithQualityHeaderValue("application/json"));
         }
@@ -140,9 +140,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                                       : BuildOpenAIBody(jsonPayload);
 
                 var req = BuildRequest(requestBody);
-                var res = await _http.SendAsync(req);
+                var res = await _http.SendAsync(req).ConfigureAwait(false);
                 res.EnsureSuccessStatusCode();
-                string raw = await res.Content.ReadAsStringAsync();
+                string raw = await res.Content.ReadAsStringAsync().ConfigureAwait(false);
                 return ParsearRespuesta(raw, payload);
             }
             catch (TaskCanceledException)
