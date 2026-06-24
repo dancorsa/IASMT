@@ -98,7 +98,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrailingATRMultiplier  = 1.5;
 
                 // Límites diarios
-                MaxDailyLossPct  = 0.03;   // 3% — NQ se mueve rápido
+                MaxDailyLossPct  = 0.05;   // 5% = $2500 en $50k (límite típico de prop firms)
                 MaxDailyTrades   = 6;
                 MaxConsecLosses  = 3;
 
@@ -397,6 +397,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Si activamos trailing en este bar, NO checkeamos salida en el mismo bar
             // (el stop ya queda puesto como orden real para el siguiente bar).
             bool trailingYaActivo = _trailingActive;
+            bool tp1EsteBar      = false;   // evita SetStopLoss en el mismo bar que ExitLong/Short parcial
 
             // Prioridad 1: cruce opuesto de la nube → salida inmediata
             if (isLong  && _cloud.HasCrossDownSignal) { CerrarPosicion("CloudCruce_Opuesto"); return; }
@@ -441,8 +442,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool tp1Alcanzado = isLong ? High[0] >= _activeTarget1 : Low[0] <= _activeTarget1;
                 if (tp1Alcanzado)
                 {
-                    _tp1Hit = true;
-                    int mitad = Math.Max(1, Position.Quantity / 2);
+                    _tp1Hit    = true;
+                    tp1EsteBar = true;
+                    int mitad  = Math.Max(1, Position.Quantity / 2);
 
                     if (isLong) ExitLong (mitad, "STC_TP1", entryName);
                     else        ExitShort(mitad, "STC_TP1", entryName);
@@ -502,8 +504,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order"
-            SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
+            // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order".
+            // Excepción: no modificar el bracket en el mismo bar que se ejecuta TP1 parcial
+            // (ExitLong/Short ya está pendiente; NT8 rechaza modificaciones simultáneas).
+            if (!tp1EsteBar)
+                SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
         }
 
         // ─── Cerrar posición ──────────────────────────────────────────────────
