@@ -47,6 +47,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double         _trailingStopPrice;
         private bool           _trailingActive;
         private bool           _breakEvenTriggered;
+        private double         _ratchetRiskPoints;  // |entry - initialStop| en precio
+        private int            _ratchetLevel;       // R entero bloqueado más alto (0=BE, 2=2R, …)
         private STATradeRecord _activeRecord;
 
         // ─── Auxiliares ───────────────────────────────────────────────────────
@@ -92,6 +94,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrailAfterTP1       = true;
 
                 // Trailing stop — ATR×1.5 para dar holgura en NQ
+                UseRatchetStop         = true;
                 TrailAfterBreakEven    = true;
                 UseFixedTrail          = false;
                 TrailingPoints         = 30.0;
@@ -339,6 +342,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             _trailingStopPrice  = 0;
             _lastExitPrice      = 0;
             _breakEvenTriggered = false;
+            _ratchetRiskPoints  = Math.Abs(Close[0] - risk.StopPrice);
+            _ratchetLevel       = 0;
 
             _riskManager.RegisterTrade(setupType);
 
@@ -466,6 +471,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 }
             }
 
+            // Prioridad 4.5: Ratchet escalonado — solo activo tras TP1 para el 50% restante
+            AplicarRatchet(isLong);
+
             // Prioridad 5: trailing stop (activo tras TP1 o BE)
             if (_trailingActive)
             {
@@ -563,6 +571,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             _activeRecord      = null;
             _trailingActive    = false;
             _trailingStopPrice = 0;
+            _ratchetRiskPoints = 0;
+            _ratchetLevel      = 0;
         }
 
         // ─── Callbacks de órdenes ─────────────────────────────────────────────
@@ -578,9 +588,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             string name = execution.Order.Name ?? "";
             if (name == "STC_Long" || name == "STC_Short")
             {
-                _positionOpen     = true;
-                _entrySubmitted   = true;
-                _activeEntryPrice = price;
+                _positionOpen      = true;
+                _entrySubmitted    = true;
+                _activeEntryPrice  = price;
+                _ratchetRiskPoints = Math.Abs(price - _activeStopPrice);   // recalcular con fill real
                 if (_activeRecord != null) _activeRecord.EntryPrice = price;
             }
             else
@@ -606,6 +617,36 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _entrySubmitted = false;
                 _positionOpen   = Position.MarketPosition != MarketPosition.Flat;
                 Print($"[STCFollower] Orden {orderState}: {nativeError}");
+            }
+        }
+
+        // ─── Ratchet stop escalonado ──────────────────────────────────────
+        // Solo activo tras TP1. Cuando el precio alcanza (N+0.5)×R, asegura N×R.
+        // Ejemplo con stop=10pts (1R): 2.5R→lock2R, 3.5R→lock3R, 4.5R→lock4R.
+        private void AplicarRatchet(bool isLong)
+        {
+            if (!UseRatchetStop || !_tp1Hit || _ratchetRiskPoints <= 0) return;
+
+            double ganancia = isLong
+                ? High[0]  - _activeEntryPrice
+                : _activeEntryPrice - Low[0];
+
+            // N = floor(ganancia/riesgo - 0.5): el nivel a asegurar
+            int nuevoNivel = (int)Math.Floor(ganancia / _ratchetRiskPoints - 0.5 + 1e-9);
+
+            // Mínimo 2R (TP1 ya estaba en 2R; no retrocedemos por debajo del BE)
+            if (nuevoNivel <= _ratchetLevel || nuevoNivel < 2) return;
+
+            _ratchetLevel = nuevoNivel;
+            double lockPrice = isLong
+                ? _activeEntryPrice + _ratchetLevel * _ratchetRiskPoints
+                : _activeEntryPrice - _ratchetLevel * _ratchetRiskPoints;
+
+            bool mejora = isLong ? lockPrice > _activeStopPrice : lockPrice < _activeStopPrice;
+            if (mejora)
+            {
+                _activeStopPrice = lockPrice;
+                Print($"[STCFollower] Ratchet {_ratchetLevel}R asegurado — stop→{_activeStopPrice:F2}");
             }
         }
 
@@ -683,22 +724,27 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool TrailAfterTP1 { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Trailing activo tras Breakeven", Order = 11, GroupName = "3. Riesgo",
+        [Display(Name = "Ratchet stop tras TP1 (2.5R→lock2R, 3.5R→lock3R…)", Order = 11, GroupName = "3. Riesgo",
+                 Description = "Tras TP1, asegura N×R cuando el precio alcanza (N+0.5)×R. Coexiste con trailing.")]
+        public bool UseRatchetStop { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Trailing activo tras Breakeven", Order = 12, GroupName = "3. Riesgo",
                  Description = "Activa trailing stop automáticamente cuando se alcanza el breakeven.")]
         public bool TrailAfterBreakEven { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Usar trailing por puntos fijos (no ATR)", Order = 12, GroupName = "3. Riesgo",
+        [Display(Name = "Usar trailing por puntos fijos (no ATR)", Order = 13, GroupName = "3. Riesgo",
                  Description = "Si activado: trailing fijo en puntos. Si desactivado: trailing por ATR × multiplicador.")]
         public bool UseFixedTrail { get; set; }
 
         [NinjaScriptProperty, Range(1.0, 500.0)]
-        [Display(Name = "Trailing fijo (puntos)", Order = 13, GroupName = "3. Riesgo",
+        [Display(Name = "Trailing fijo (puntos)", Order = 14, GroupName = "3. Riesgo",
                  Description = "Distancia en puntos del trailing fijo. Sólo aplica si 'Trailing por puntos fijos' está activado.")]
         public double TrailingPoints { get; set; }
 
         [NinjaScriptProperty, Range(0.1, 10.0)]
-        [Display(Name = "Multiplicador ATR para trailing", Order = 14, GroupName = "3. Riesgo",
+        [Display(Name = "Multiplicador ATR para trailing", Order = 15, GroupName = "3. Riesgo",
                  Description = "Distancia del trailing = ATR(14) × este valor. Sólo aplica si el trailing es por ATR.")]
         public double TrailingATRMultiplier { get; set; }
 
