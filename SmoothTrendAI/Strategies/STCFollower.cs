@@ -321,8 +321,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool   isLong    = direction == "LONG";
             string entryName = isLong ? "STC_Long" : "STC_Short";
 
-            SetStopLoss   (entryName, CalculationMode.Price, risk.StopPrice,    false);
-            SetProfitTarget(entryName, CalculationMode.Price, risk.Target1Price);
+            SetStopLoss(entryName, CalculationMode.Price, risk.StopPrice, false);
 
             if (isLong) EnterLong (risk.Contracts, entryName);
             else        EnterShort(risk.Contracts, entryName);
