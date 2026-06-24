@@ -71,6 +71,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BarsRequiredToTrade          = 30;
                 IsExitOnSessionCloseStrategy = true;
                 ExitOnSessionCloseSeconds    = 30;
+                StartBehavior                = StartBehavior.WaitUntilFlat;
+                IsFillLimitOnTouch           = false;
+                Slippage                     = 0;
 
                 // Nube
                 TriggerPeriod           = 12;
