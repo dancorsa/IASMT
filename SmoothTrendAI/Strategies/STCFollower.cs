@@ -98,7 +98,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 TrailingATRMultiplier  = 1.5;
 
                 // Límites diarios
-                MaxDailyLossPct  = 0.05;   // 5% = $2500 en $50k (límite típico de prop firms)
+                MaxDailyLossPct  = 0.018;  // 1.8% = $900 — buffer antes del límite real de $1000/día
                 MaxDailyTrades   = 6;
                 MaxConsecLosses  = 3;
 
