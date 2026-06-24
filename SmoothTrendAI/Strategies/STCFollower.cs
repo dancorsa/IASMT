@@ -79,10 +79,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnterOnTipo1 = true;
                 EnterOnTipo2 = true;
 
-                // Riesgo — optimizado para NQ full
+                // Riesgo — optimizado para NQ full / challenge de fondeo
                 AccountCapital      = 50_000.0;
-                RiskPctPerTrade     = 0.005;   // 0.5% — NQ es muy volátil
-                MaxContracts        = 2;        // NQ full = $20/punto
+                RiskPctPerTrade     = 0.005;   // 0.5% = $250 presupuesto por trade
+                MaxContracts        = 1;        // 1 contrato NQ = max $500-900 por trade según stop
                 StopCloudMultiplier = 1.5;      // nube de NQ ya es amplia
                 StopBufferTicks     = 6;        // más ruido intra-barra en NQ
                 StopATRMultiplier   = 1.5;
@@ -417,13 +417,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     double bePrice = _activeEntryPrice
                         + (isLong ? 1 : -1) * BreakEvenLockTicks * TickSize;
 
-                    // Solo mover si mejora el stop actual
                     bool mejora = isLong ? bePrice > _activeStopPrice
                                         : bePrice < _activeStopPrice;
                     if (mejora)
                     {
-                        _activeStopPrice = bePrice;
-                        SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
+                        _activeStopPrice = bePrice;   // SetStopLoss se llama al final del método
                         Print($"[STCFollower] BE activado +{BreakEvenPoints}pts — stop→{_activeStopPrice:F2}");
                     }
 
@@ -447,8 +445,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                     if (isLong) ExitLong (mitad, "STC_TP1", entryName);
                     else        ExitShort(mitad, "STC_TP1", entryName);
 
-                    _activeStopPrice = _activeEntryPrice;
-                    SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
+                    // Solo mover stop a entry si BE no lo puso ya más cerca
+                    bool beYaMejorStop = isLong
+                        ? _activeStopPrice >= _activeEntryPrice
+                        : _activeStopPrice <= _activeEntryPrice;
+                    if (!beYaMejorStop)
+                        _activeStopPrice = _activeEntryPrice;  // SetStopLoss se llama al final
 
                     if (TrailAfterTP1)
                     {
@@ -457,7 +459,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     }
 
                     if (_activeRecord != null) _activeRecord.Tp1Hit = true;
-                    Print($"[STCFollower] TP1 alcanzado — stop→BE {_activeEntryPrice:F2}");
+                    Print($"[STCFollower] TP1 alcanzado — stop→{_activeStopPrice:F2}");
                 }
             }
 
@@ -479,8 +481,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (isLong  && nuevoTrail > _trailingStopPrice) _trailingStopPrice = nuevoTrail;
                 if (!isLong && nuevoTrail < _trailingStopPrice) _trailingStopPrice = nuevoTrail;
 
-                _activeStopPrice = _trailingStopPrice;
-                SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
+                _activeStopPrice = _trailingStopPrice;  // SetStopLoss se llama al final
 
                 // Solo chequear salida si el trailing ya estaba activo desde una barra anterior
                 if (trailingYaActivo)
@@ -496,7 +497,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             {
                 if (_activeRecord != null) _activeRecord.Tp2Hit = true;
                 CerrarPosicion("TP2_Final");
+                return;
             }
+
+            // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order"
+            SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
         }
 
         // ─── Cerrar posición ──────────────────────────────────────────────────
