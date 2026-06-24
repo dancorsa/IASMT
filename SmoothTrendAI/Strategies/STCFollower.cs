@@ -81,8 +81,8 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 // Riesgo — optimizado para NQ full / challenge de fondeo
                 AccountCapital      = 50_000.0;
-                RiskPctPerTrade     = 0.005;   // 0.5% = $250 presupuesto por trade
-                MaxContracts        = 1;        // 1 contrato NQ = max $500-900 por trade según stop
+                RiskPctPerTrade     = 0.005;   // 0.5% = $250/trade en MNQ con 5 contratos
+                MaxContracts        = 5;        // MNQ: 5 ctrs × 25pts × $2 = $250 riesgo típico
                 StopCloudMultiplier = 1.5;      // nube de NQ ya es amplia
                 StopBufferTicks     = 6;        // más ruido intra-barra en NQ
                 StopATRMultiplier   = 1.5;
