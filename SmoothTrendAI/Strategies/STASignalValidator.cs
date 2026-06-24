@@ -10,7 +10,7 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Threading.Tasks;
-using Newtonsoft.Json.Linq;      // para parseo de respuestas (disponible en NT8)
+using System.Globalization;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
@@ -168,71 +168,56 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ─── Serialización ─────────────────────────────────────────────────
-        private string SerializarPayload(STASignalPayload p) => new JObject
+        private string SerializarPayload(STASignalPayload p)
         {
-            ["strategy_type"]               = "smooth_trend_cloud_v2",
-            ["instrument"]                  = p.Instrument,
-            ["bar_type"]                    = p.BarType,
-            ["timestamp"]                   = p.Timestamp,
-            ["signal_direction"]            = p.SignalDirection,
-            ["setup_type"]                  = p.SetupType,
-            ["trigger_line"]                = p.TriggerLine,
-            ["smooth_trend_line"]           = p.SmoothTrendLine,
-            ["cloud_width_ticks"]           = p.CloudWidthTicks,
-            ["bars_in_current_color"]       = p.BarsInCurrentColor,
-            ["rejection_candle"]            = p.RejectionCandle,
-            ["daily_context"]               = p.DailyContext,
-            ["allowed_direction"]           = p.AllowedDirection,
-            ["prior_high"]                  = p.PriorHigh,
-            ["prior_close"]                 = p.PriorClose,
-            ["prior_low"]                   = p.PriorLow,
-            ["consecutive_direction_days"]  = p.ConsecutiveDirectionDays,
-            ["has_strong_directional_bias"] = p.HasStrongDirectionalBias,
-            ["elliott_wave_position"]       = p.ElliottWavePosition,
-            ["elliott_wave_confidence"]     = p.ElliottWaveConfidence,
-            ["elliott_favorable"]           = p.ElliottFavorable,
-            ["nearest_fib_support"]         = p.NearestFibSupport,
-            ["nearest_fib_resistance"]      = p.NearestFibResistance,
-            ["base_confidence_pre_ai"]      = p.BaseConfidencePreAI,
-            ["rsi_m15"]                     = p.RsiM15,
-            ["volume_ratio"]                = p.VolumeRatio,
-            ["current_price"]               = p.CurrentPrice,
-            ["proposed_entry"]              = p.ProposedEntry,
-            ["proposed_stop"]               = p.ProposedStop,
-            ["proposed_target_1"]           = p.ProposedTarget1,
-            ["proposed_target_2"]           = p.ProposedTarget2,
-            ["risk_reward_ratio"]           = p.RiskRewardRatio
-        }.ToString(Newtonsoft.Json.Formatting.None);
+            var sb = new StringBuilder();
+            sb.Append('{');
+            sb.Append("\"strategy_type\":\"smooth_trend_cloud_v2\",");
+            sb.Append("\"instrument\":"               + JES(p.Instrument)          + ",");
+            sb.Append("\"bar_type\":"                 + JES(p.BarType)             + ",");
+            sb.Append("\"timestamp\":"                + JES(p.Timestamp)           + ",");
+            sb.Append("\"signal_direction\":"         + JES(p.SignalDirection)     + ",");
+            sb.Append("\"setup_type\":"               + JES(p.SetupType)           + ",");
+            sb.Append("\"trigger_line\":"             + N(p.TriggerLine)           + ",");
+            sb.Append("\"smooth_trend_line\":"        + N(p.SmoothTrendLine)       + ",");
+            sb.Append("\"cloud_width_ticks\":"        + N(p.CloudWidthTicks)       + ",");
+            sb.Append("\"bars_in_current_color\":"    + p.BarsInCurrentColor       + ",");
+            sb.Append("\"rejection_candle\":"         + JES(p.RejectionCandle)     + ",");
+            sb.Append("\"daily_context\":"            + JES(p.DailyContext)        + ",");
+            sb.Append("\"allowed_direction\":"        + JES(p.AllowedDirection)    + ",");
+            sb.Append("\"prior_high\":"               + N(p.PriorHigh)             + ",");
+            sb.Append("\"prior_close\":"              + N(p.PriorClose)            + ",");
+            sb.Append("\"prior_low\":"                + N(p.PriorLow)              + ",");
+            sb.Append("\"consecutive_direction_days\":" + p.ConsecutiveDirectionDays + ",");
+            sb.Append("\"has_strong_directional_bias\":" + B(p.HasStrongDirectionalBias) + ",");
+            sb.Append("\"elliott_wave_position\":"    + JES(p.ElliottWavePosition) + ",");
+            sb.Append("\"elliott_wave_confidence\":"  + N(p.ElliottWaveConfidence) + ",");
+            sb.Append("\"elliott_favorable\":"        + B(p.ElliottFavorable)      + ",");
+            sb.Append("\"nearest_fib_support\":"      + N(p.NearestFibSupport)     + ",");
+            sb.Append("\"nearest_fib_resistance\":"   + N(p.NearestFibResistance)  + ",");
+            sb.Append("\"base_confidence_pre_ai\":"   + N(p.BaseConfidencePreAI)   + ",");
+            sb.Append("\"rsi_m15\":"                  + N(p.RsiM15)                + ",");
+            sb.Append("\"volume_ratio\":"             + N(p.VolumeRatio)           + ",");
+            sb.Append("\"current_price\":"            + N(p.CurrentPrice)          + ",");
+            sb.Append("\"proposed_entry\":"           + N(p.ProposedEntry)         + ",");
+            sb.Append("\"proposed_stop\":"            + N(p.ProposedStop)          + ",");
+            sb.Append("\"proposed_target_1\":"        + N(p.ProposedTarget1)       + ",");
+            sb.Append("\"proposed_target_2\":"        + N(p.ProposedTarget2)       + ",");
+            sb.Append("\"risk_reward_ratio\":"        + N(p.RiskRewardRatio));
+            sb.Append('}');
+            return sb.ToString();
+        }
 
-        private string BuildClaudeBody(string userContent) => new JObject
-        {
-            ["model"]      = "claude-sonnet-4-6",
-            ["max_tokens"] = 256,
-            ["system"]     = SYSTEM_PROMPT,
-            ["messages"]   = new JArray(new JObject
-            {
-                ["role"] = "user",
-                ["content"] = userContent
-            })
-        }.ToString(Newtonsoft.Json.Formatting.None);
+        private string BuildClaudeBody(string userContent) =>
+            "{\"model\":\"claude-sonnet-4-6\",\"max_tokens\":256," +
+            "\"system\":" + JES(SYSTEM_PROMPT) + "," +
+            "\"messages\":[{\"role\":\"user\",\"content\":" + JES(userContent) + "}]}";
 
-        private string BuildOpenAIBody(string userContent) => new JObject
-        {
-            ["model"] = "gpt-4o-mini",
-            ["messages"] = new JArray(
-                new JObject
-                {
-                    ["role"] = "system",
-                    ["content"] = SYSTEM_PROMPT
-                },
-                new JObject
-                {
-                    ["role"] = "user",
-                    ["content"] = userContent
-                }),
-            ["max_tokens"] = 256,
-            ["temperature"] = 0.1
-        }.ToString(Newtonsoft.Json.Formatting.None);
+        private string BuildOpenAIBody(string userContent) =>
+            "{\"model\":\"gpt-4o-mini\",\"max_tokens\":256,\"temperature\":0.1," +
+            "\"messages\":[" +
+            "{\"role\":\"system\",\"content\":" + JES(SYSTEM_PROMPT) + "}," +
+            "{\"role\":\"user\",\"content\":" + JES(userContent) + "}]}";
 
         private HttpRequestMessage BuildRequest(string body)
         {
@@ -255,29 +240,25 @@ namespace NinjaTrader.NinjaScript.Strategies
             return req;
         }
 
-        // ─── Parseo de respuesta (usa Newtonsoft.Json — disponible en NT8) ──
+        // ─── Parseo de respuesta ─────────────────────────────────────────────
         private STAAIValidationResult ParsearRespuesta(string raw, STASignalPayload p)
         {
             try
             {
-                // Extraer el texto de contenido según el proveedor
-                var jOuter = JObject.Parse(raw);
-                string texto;
+                string texto = Provider == STAAIProvider.Claude
+                    ? JGetStr(raw, "text")
+                    : JGetStr(raw, "content");
 
-                if (Provider == STAAIProvider.Claude)
-                    texto = jOuter["content"][0]["text"].ToString();
-                else
-                    texto = jOuter["choices"][0]["message"]["content"].ToString();
-
-                var jResp = JObject.Parse(ExtraerJson(texto));
+                string respJson = ExtraerJson(texto);
+                string sq       = JGetStr(respJson, "setup_quality");
 
                 return new STAAIValidationResult
                 {
-                    Approve        = jResp["approve"].Value<bool>(),
-                    Confidence     = jResp["confidence"].Value<double>(),
-                    Reason         = jResp["reason"]?.Value<string>() ?? "",
-                    RiskAdjustment = jResp["risk_adjustment"].Value<double>(),
-                    SetupQuality   = jResp["setup_quality"]?.Value<string>() ?? "medium"
+                    Approve        = JGetBool(respJson, "approve"),
+                    Confidence     = JGetNum(respJson,  "confidence"),
+                    Reason         = JGetStr(respJson,  "reason"),
+                    RiskAdjustment = JGetNum(respJson,  "risk_adjustment"),
+                    SetupQuality   = sq.Length > 0 ? sq : "medium"
                 };
             }
             catch (Exception ex)
@@ -351,6 +332,64 @@ namespace NinjaTrader.NinjaScript.Strategies
                 RiskAdjustment = 0.50,
                 SetupQuality   = "low"
             };
+
+        // ─── Helpers JSON sin dependencias externas ──────────────────────────
+        private static string JES(string s)
+        {
+            if (s == null) return "null";
+            return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"")
+                            .Replace("\n", "\\n").Replace("\r", "").Replace("\t", "\\t") + "\"";
+        }
+
+        private static string N(double d) =>
+            d.ToString("G", CultureInfo.InvariantCulture);
+
+        private static string B(bool b) => b ? "true" : "false";
+
+        private static string JGetStr(string json, string key)
+        {
+            string marker = "\"" + key + "\":\"";
+            int i = json.IndexOf(marker, StringComparison.Ordinal);
+            if (i < 0) return "";
+            i += marker.Length;
+            var sb = new StringBuilder();
+            while (i < json.Length && json[i] != '"')
+            {
+                if (json[i] == '\\' && i + 1 < json.Length)
+                {
+                    char next = json[++i];
+                    sb.Append(next == 'n' ? '\n' : next == 'r' ? '\r' : next == 't' ? '\t' : next);
+                }
+                else sb.Append(json[i]);
+                i++;
+            }
+            return sb.ToString();
+        }
+
+        private static double JGetNum(string json, string key)
+        {
+            string marker = "\"" + key + "\":";
+            int i = json.IndexOf(marker, StringComparison.Ordinal);
+            if (i < 0) return 0;
+            i += marker.Length;
+            while (i < json.Length && json[i] == ' ') i++;
+            int s = i;
+            while (i < json.Length && (char.IsDigit(json[i]) || json[i] == '.' ||
+                   json[i] == '-' || json[i] == 'e' || json[i] == 'E' || json[i] == '+')) i++;
+            double v;
+            return double.TryParse(json.Substring(s, i - s),
+                NumberStyles.Any, CultureInfo.InvariantCulture, out v) ? v : 0;
+        }
+
+        private static bool JGetBool(string json, string key)
+        {
+            string marker = "\"" + key + "\":";
+            int i = json.IndexOf(marker, StringComparison.Ordinal);
+            if (i < 0) return false;
+            i += marker.Length;
+            while (i < json.Length && json[i] == ' ') i++;
+            return i + 4 <= json.Length && string.CompareOrdinal(json, i, "true", 0, 4) == 0;
+        }
 
         public void Dispose()
         {
