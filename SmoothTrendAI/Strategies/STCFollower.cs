@@ -141,7 +141,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                     // Sin límite por tipo — el tope general MaxDailyTrades controla todo
                     MaxTrendStartPerDay    = MaxDailyTrades,
                     MaxCloudPullbackPerDay = MaxDailyTrades,
-                    TrailingATRMultiplier  = TrailingATRMultiplier
+                    TrailingATRMultiplier  = TrailingATRMultiplier,
+                    MaxDailyProfitPct      = 1.0   // sin límite de ganancia diaria
                 };
 
                 _journal = new STATradeJournal();
@@ -233,7 +234,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Print($"[STC-DIAG] Bar={CurrentBar} {Time[0]:HH:mm} BLOQUEADO: límites diarios " +
                       $"trades={_riskManager.DailyTrades}/{MaxDailyTrades} " +
                       $"pérdidas={_riskManager.ConsecutiveLosses}/{MaxConsecLosses} " +
-                      $"PnL=${_riskManager.DailyPnL:F0} límite=${-(AccountCapital * MaxDailyLossPct):F0}");
+                      $"PnL=${_riskManager.DailyPnL:F0} " +
+                      $"pérdidaLím=${-(AccountCapital * MaxDailyLossPct):F0}");
                 return;
             }
 
