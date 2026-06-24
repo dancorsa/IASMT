@@ -446,10 +446,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                 bool tp1Alcanzado = isLong ? High[0] >= _activeTarget1 : Low[0] <= _activeTarget1;
                 if (tp1Alcanzado)
                 {
-                    _tp1Hit    = true;
+                    _tp1Hit = true;
+                    if (_activeRecord != null) _activeRecord.Tp1Hit = true;
+
+                    // Si TP2 también se alcanza en la misma barra → cerrar todo directamente.
+                    // Dos ExitLong en el mismo bar causan "Unable to change order" en NT8.
+                    bool tp2EnMismaBarra = isLong ? High[0] >= _activeTarget2 : Low[0] <= _activeTarget2;
+                    if (tp2EnMismaBarra)
+                    {
+                        if (_activeRecord != null) _activeRecord.Tp2Hit = true;
+                        CerrarPosicion("TP1_TP2_MismaBarra");
+                        return;
+                    }
+
                     tp1EsteBar = true;
                     int mitad  = Math.Max(1, Position.Quantity / 2);
-
                     if (isLong) ExitLong (mitad, "STC_TP1", entryName);
                     else        ExitShort(mitad, "STC_TP1", entryName);
 
@@ -458,7 +469,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                         ? _activeStopPrice >= _activeEntryPrice
                         : _activeStopPrice <= _activeEntryPrice;
                     if (!beYaMejorStop)
-                        _activeStopPrice = _activeEntryPrice;  // SetStopLoss se llama al final
+                        _activeStopPrice = _activeEntryPrice;
 
                     if (TrailAfterTP1)
                     {
@@ -466,7 +477,6 @@ namespace NinjaTrader.NinjaScript.Strategies
                         _trailingStopPrice = _activeStopPrice;
                     }
 
-                    if (_activeRecord != null) _activeRecord.Tp1Hit = true;
                     Print($"[STCFollower] TP1 alcanzado — stop→{_activeStopPrice:F2}");
                 }
             }
@@ -492,7 +502,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (isLong  && nuevoTrail > _trailingStopPrice) _trailingStopPrice = nuevoTrail;
                 if (!isLong && nuevoTrail < _trailingStopPrice) _trailingStopPrice = nuevoTrail;
 
-                _activeStopPrice = _trailingStopPrice;  // SetStopLoss se llama al final
+                // Solo mejorar: no sobreescribir un stop más protector ya asegurado por ratchet
+                if (isLong  && _trailingStopPrice > _activeStopPrice) _activeStopPrice = _trailingStopPrice;
+                if (!isLong && _trailingStopPrice < _activeStopPrice) _activeStopPrice = _trailingStopPrice;
 
                 // Solo chequear salida si el trailing ya estaba activo desde una barra anterior
                 if (trailingYaActivo)
@@ -512,10 +524,18 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order".
-            // Excepción: no modificar el bracket en el mismo bar que se ejecuta TP1 parcial
-            // (ExitLong/Short ya está pendiente; NT8 rechaza modificaciones simultáneas).
+            // Excepción: no modificar el bracket en el mismo bar que se ejecuta TP1 parcial.
             if (!tp1EsteBar)
-                SetStopLoss(entryName, CalculationMode.Price, _activeStopPrice, false);
+            {
+                // Alinear al tick y validar dirección antes de enviar al broker.
+                // APEX rechaza con "InvalidPrice" si el stop queda del lado incorrecto del mercado.
+                double stopAlineado = Math.Round(_activeStopPrice / TickSize) * TickSize;
+                bool stopValido = isLong
+                    ? stopAlineado < Close[0]   // LONG: stop debe ser menor al precio actual
+                    : stopAlineado > Close[0];  // SHORT: stop debe ser mayor al precio actual
+                if (stopValido)
+                    SetStopLoss(entryName, CalculationMode.Price, stopAlineado, false);
+            }
         }
 
         // ─── Cerrar posición ──────────────────────────────────────────────────
