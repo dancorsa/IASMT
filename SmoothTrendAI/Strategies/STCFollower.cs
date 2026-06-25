@@ -178,10 +178,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                     false,          // ShowEntryLevels
                     3,              // LevelStopBufferTicks
                     2.0,            // LevelTP1Ratio
-                    4.0,            // LevelTP2Ratio
-                    false,          // ShowVWAP      — no necesario en estrategia
-                    2.0,            // TickValue     — MNQ $2/punto (no afecta señales)
-                    18);            // VWAPSessionResetHour — reset Globex 18:00 ET
+                    4.0);           // LevelTP2Ratio
 
                 _cloudUpBrush   = new SolidColorBrush(Color.FromArgb(28, 0, 180, 255));
                 _cloudDownBrush = new SolidColorBrush(Color.FromArgb(28, 255, 120, 0));

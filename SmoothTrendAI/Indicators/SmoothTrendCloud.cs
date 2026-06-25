@@ -457,6 +457,8 @@ namespace NinjaTrader.NinjaScript.Indicators
                 RemoveDrawObject($"NTE_{old}");  RemoveDrawObject($"NTS_{old}");
                 RemoveDrawObject($"NTT1_{old}"); RemoveDrawObject($"NTT2_{old}");
             }
+
+
         }
 
         // ─── Señal manual Tipo 2 con validación IA opcional ───────────────

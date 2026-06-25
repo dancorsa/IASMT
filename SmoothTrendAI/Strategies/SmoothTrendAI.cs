@@ -205,10 +205,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                           false,                                     // ShowEntryLevels
                                           3,                                         // LevelStopBufferTicks
                                           2.0,                                       // LevelTP1Ratio
-                                          4.0,                                       // LevelTP2Ratio
-                                          false,                                     // ShowVWAP
-                                          2.0,                                       // TickValue
-                                          18);                                       // VWAPSessionResetHour
+                                          4.0);                                      // LevelTP2Ratio
 
                 // Filtros
                 _dailyFilter = new STADailyContextFilter();
