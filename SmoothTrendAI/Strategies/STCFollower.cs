@@ -49,6 +49,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool           _breakEvenTriggered;
         private double         _ratchetRiskPoints;  // |entry - initialStop| en precio
         private int            _ratchetLevel;       // R entero bloqueado más alto (0=BE, 2=2R, …)
+        private bool           _pendingTP2Bracket;  // poner SetProfitTarget(TP2) en la barra siguiente a TP1
         private STATradeRecord _activeRecord;
 
         // ─── Auxiliares ───────────────────────────────────────────────────────
@@ -462,7 +463,8 @@ namespace NinjaTrader.NinjaScript.Strategies
                         return;
                     }
 
-                    tp1EsteBar = true;
+                    tp1EsteBar        = true;
+                    _pendingTP2Bracket = true;   // SetProfitTarget(TP2) se pondrá la barra siguiente
                     int mitad  = Math.Max(1, Position.Quantity / 2);
                     if (isLong) ExitLong (mitad, "STC_TP1", entryName);
                     else        ExitShort(mitad, "STC_TP1", entryName);
@@ -524,6 +526,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (_activeRecord != null) _activeRecord.Tp2Hit = true;
                 CerrarPosicion("TP2_Final");
                 return;
+            }
+
+            // Bracket TP2: se pone en la barra siguiente a TP1 para evitar conflicto con ExitLong parcial
+            if (_pendingTP2Bracket && !tp1EsteBar)
+            {
+                _pendingTP2Bracket = false;
+                SetProfitTarget(entryName, CalculationMode.Price, _activeTarget2);
             }
 
             // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order".
@@ -594,8 +603,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             _activeRecord      = null;
             _trailingActive    = false;
             _trailingStopPrice = 0;
-            _ratchetRiskPoints = 0;
-            _ratchetLevel      = 0;
+            _ratchetRiskPoints  = 0;
+            _ratchetLevel       = 0;
+            _pendingTP2Bracket  = false;
         }
 
         // ─── Callbacks de órdenes ─────────────────────────────────────────────
