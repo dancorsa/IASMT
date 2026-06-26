@@ -11,6 +11,7 @@
 // ============================================================
 #region Using declarations
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
 using System.Windows.Media;
@@ -48,10 +49,23 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool _breakEvenTriggered;
 
         // ─── Auxiliares ───────────────────────────────────────────────────────
-        private DateTime _lastDailyReset = DateTime.MinValue;
-        private int      _lastSetupBar   = -999;
-        private double   _lastExitPrice  = 0;
+        private DateTime _lastDailyReset  = DateTime.MinValue;
+        private DateTime _lastWeeklyReset = DateTime.MinValue;
+        private int      _lastSetupBar    = -999;
+        private double   _lastExitPrice   = 0;
         private ADX      _adx;
+
+        // Tiempo en posición
+        private int _entryBar = -1;
+
+        // Prior day S/R
+        private double _priorDayHigh = double.MaxValue;
+        private double _priorDayLow  = double.MinValue;
+        private double _currentDayHigh;
+        private double _currentDayLow;
+
+        // Tasa de barras (rolling 60 min)
+        private readonly Queue<DateTime> _barTimes = new Queue<DateTime>();
 
         // ─── Nube visual ──────────────────────────────────────────────────────
         private SolidColorBrush _cloudUpBrush;
@@ -104,10 +118,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BreakEvenPoints    = 0;    // 0 = activar en TP1
                 BreakEvenLockTicks = 4;
 
-                // Límites diarios
+                // Límites diarios y semanales
                 MaxDailyLossPct  = 0.018;
                 MaxDailyTrades   = 10;
                 MaxConsecLosses  = 3;
+                MaxWeeklyTrades  = 30;
+                MaxWeeklyLossPct = 0.05;
+
+                // Entrada y calidad
+                UseLimitEntry        = false;
+                LimitOffsetTicks     = 2;
+                UseMinRR             = true;
+                MinRR                = 1.5;
+                UseTimeExit          = true;
+                MaxBarsInTrade       = 20;
+                UseSRFilter          = true;
+                SRDistanceTicks      = 10;
+                UseBarRateFilter     = false;
+                MinBarsPerHour       = 3;
+                MaxBarsPerHour       = 60;
+                UseAdaptiveSizing    = false;
+                AdaptiveSizingThreshold = 40;
 
                 // Sesión
                 UseTimeFilter     = false;
@@ -148,7 +179,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                     MaxTrendStartPerDay    = MaxDailyTrades,
                     MaxCloudPullbackPerDay = MaxDailyTrades,
                     TrailingATRMultiplier  = 1.5,
-                    MaxDailyProfitPct      = 1.0
+                    MaxDailyProfitPct      = 1.0,
+                    MaxWeeklyTrades        = MaxWeeklyTrades,
+                    MaxWeeklyLossPct       = MaxWeeklyLossPct
                 };
 
                 _journal = new STATradeJournal();
@@ -206,12 +239,34 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
             if (_entrySubmitted && !_positionOpen) return;   // esperando fill
 
+            // ── Reset semanal ─────────────────────────────────────────────────
+            if (_lastWeeklyReset == DateTime.MinValue ||
+                GetISOWeek(Time[0]) != GetISOWeek(_lastWeeklyReset))
+            {
+                _riskManager.ResetWeekly();
+                _lastWeeklyReset = Time[0];
+            }
+
             // ── Reset diario ──────────────────────────────────────────────────
             if (Time[0].Date != _lastDailyReset.Date)
             {
+                _priorDayHigh   = _currentDayHigh > 0 ? _currentDayHigh : double.MaxValue;
+                _priorDayLow    = _currentDayLow  > 0 ? _currentDayLow  : double.MinValue;
+                _currentDayHigh = High[0];
+                _currentDayLow  = Low[0];
                 _riskManager.ResetDaily();
                 _lastDailyReset = Time[0].Date;
             }
+            else
+            {
+                _currentDayHigh = Math.Max(_currentDayHigh, High[0]);
+                _currentDayLow  = Math.Min(_currentDayLow,  Low[0]);
+            }
+
+            // ── Tasa de barras (rolling 60 min) ───────────────────────────────
+            _barTimes.Enqueue(Time[0]);
+            while (_barTimes.Count > 0 && (Time[0] - _barTimes.Peek()).TotalMinutes > 60)
+                _barTimes.Dequeue();
 
             // ── Posición abierta: solo salida por cruce opuesto ──────────────
             if (_positionOpen)
@@ -276,6 +331,36 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            // ── Filtro tasa de barras ─────────────────────────────────────────
+            if (UseBarRateFilter)
+            {
+                int bph = _barTimes.Count;
+                if (bph < MinBarsPerHour)
+                {
+                    Print($"[STC-DIAG] BLOQUEADO BarRate: {bph} barras/hora < {MinBarsPerHour} (mercado muerto)");
+                    return;
+                }
+                if (bph > MaxBarsPerHour)
+                {
+                    Print($"[STC-DIAG] BLOQUEADO BarRate: {bph} barras/hora > {MaxBarsPerHour} (mercado caótico)");
+                    return;
+                }
+            }
+
+            // ── Filtro distancia a S/R del día anterior ───────────────────────
+            if (UseSRFilter && _priorDayHigh < double.MaxValue)
+            {
+                double distH = Math.Abs(Close[0] - _priorDayHigh);
+                double distL = Math.Abs(Close[0] - _priorDayLow);
+                double minDist = SRDistanceTicks * TickSize;
+                if (distH < minDist || distL < minDist)
+                {
+                    Print($"[STC-DIAG] BLOQUEADO S/R: precio cerca de PDH={_priorDayHigh:F2} / PDL={_priorDayLow:F2} " +
+                          $"(distancia mín={SRDistanceTicks}t)");
+                    return;
+                }
+            }
+
             _lastSetupBar = CurrentBar;
 
             // ── Límite por tipo de setup ──────────────────────────────────────
@@ -288,6 +373,11 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Calcular riesgo ────────────────────────────────────────────────
             double atr14   = ATR(14)[0];
             double tickVal = Instrument.MasterInstrument.PointValue * TickSize;
+
+            // Sizing adaptativo
+            if (UseAdaptiveSizing && _riskManager.DailyTrades >= 2)
+                _riskManager.AdaptiveSizeFactor = _riskManager.DailyWinRate < AdaptiveSizingThreshold / 100.0
+                    ? 0.5 : 1.0;
 
             var setupInfo = new STASetupResult
             {
@@ -309,6 +399,20 @@ namespace NinjaTrader.NinjaScript.Strategies
                 aiRiskAdjustment:  1.0,
                 elliottMultiplier: 1.0,
                 marketContext:     "Bullish");
+
+            // ── Filtro R:R mínimo ─────────────────────────────────────────────
+            if (UseMinRR)
+            {
+                bool   isLongCheck = direction == "LONG";
+                double tp1Dist  = isLongCheck ? risk.Target1Price - Close[0] : Close[0] - risk.Target1Price;
+                double stopDist = isLongCheck ? Close[0] - risk.StopPrice    : risk.StopPrice - Close[0];
+                double rr       = stopDist > 0 ? tp1Dist / stopDist : 0;
+                if (rr < MinRR)
+                {
+                    Print($"[STC-DIAG] BLOQUEADO R:R: {direction} {setupType} R:R={rr:F2} < {MinRR}");
+                    return;
+                }
+            }
 
             EjecutarEntrada(direction, setupType, risk);
         }
@@ -358,28 +462,34 @@ namespace NinjaTrader.NinjaScript.Strategies
                 : Close[0] - stopDist * TP3Ratio;
             target3Price = Math.Round(target3Price / TickSize) * TickSize;
 
-            // Slot TP1 (1:1)
+            // Precio límite para CloudPullback (solo aplica cuando UseLimitEntry=true)
+            bool   usarLimite = UseLimitEntry && setupType == "CloudPullback";
+            double limitPrice = isLong
+                ? Close[0] - LimitOffsetTicks * TickSize
+                : Close[0] + LimitOffsetTicks * TickSize;
+
+            // Slot TP1
             SetStopLoss   (n1, CalculationMode.Price, risk.StopPrice,    false);
             SetProfitTarget(n1, CalculationMode.Price, risk.Target1Price);
-            if (isLong) EnterLong (tp1Qty, n1);
-            else        EnterShort(tp1Qty, n1);
+            if (usarLimite) { if (isLong) EnterLongLimit (tp1Qty, limitPrice, n1); else EnterShortLimit(tp1Qty, limitPrice, n1); }
+            else            { if (isLong) EnterLong       (tp1Qty, n1);            else EnterShort      (tp1Qty, n1);            }
 
-            // Slot TP2 (2:1)
+            // Slot TP2
             if (tp2Qty > 0)
             {
                 SetStopLoss   (n2, CalculationMode.Price, risk.StopPrice,    false);
                 SetProfitTarget(n2, CalculationMode.Price, risk.Target2Price);
-                if (isLong) EnterLong (tp2Qty, n2);
-                else        EnterShort(tp2Qty, n2);
+                if (usarLimite) { if (isLong) EnterLongLimit (tp2Qty, limitPrice, n2); else EnterShortLimit(tp2Qty, limitPrice, n2); }
+                else            { if (isLong) EnterLong       (tp2Qty, n2);            else EnterShort      (tp2Qty, n2);            }
             }
 
-            // Slot TP3 (3:1)
+            // Slot TP3
             if (tp3Qty > 0)
             {
                 SetStopLoss   (n3, CalculationMode.Price, risk.StopPrice,  false);
                 SetProfitTarget(n3, CalculationMode.Price, target3Price);
-                if (isLong) EnterLong (tp3Qty, n3);
-                else        EnterShort(tp3Qty, n3);
+                if (usarLimite) { if (isLong) EnterLongLimit (tp3Qty, limitPrice, n3); else EnterShortLimit(tp3Qty, limitPrice, n3); }
+                else            { if (isLong) EnterLong       (tp3Qty, n3);            else EnterShort      (tp3Qty, n3);            }
             }
 
             _entrySubmitted     = true;
@@ -393,6 +503,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _activeTarget3      = target3Price;
             _breakEvenTriggered = false;
             _lastExitPrice      = 0;
+            _entryBar           = CurrentBar;
 
             _activeRecord = new STATradeRecord
             {
@@ -452,6 +563,14 @@ namespace NinjaTrader.NinjaScript.Strategies
             string n1     = isLong ? "STC_TP1_Long"  : "STC_TP1_Short";
             string n2     = isLong ? "STC_TP2_Long"  : "STC_TP2_Short";
             string n3     = isLong ? "STC_TP3_Long"  : "STC_TP3_Short";
+
+            // Salida por tiempo (sin progreso en N barras)
+            if (UseTimeExit && _entryBar >= 0 && CurrentBar - _entryBar >= MaxBarsInTrade)
+            {
+                Print($"[STCFollower] SALIDA por tiempo: {MaxBarsInTrade} barras sin resolver la posición");
+                CerrarPosicion("TimeExit");
+                return;
+            }
 
             // Salida por cruce opuesto
             if (isLong  && _cloud.HasCrossDownSignal) { CerrarPosicion("CloudCruce_Opuesto"); return; }
@@ -630,11 +749,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ? $"{(coolOk ? V : X)}  {barsDesdeLast} barras  (mín {SetupCooldownBars})"
                 : $"{NA}  desactivado";
 
-            // Riesgo diario
-            bool   riskOk  = _riskManager.CanTrade();
-            string riskStr = $"{(riskOk ? V : X)}  trades={_riskManager.DailyTrades}/{MaxDailyTrades}  " +
-                             $"pérd={_riskManager.ConsecutiveLosses}/{MaxConsecLosses}  " +
-                             $"P&L=${_riskManager.DailyPnL:F0}";
+            // Riesgo diario y semanal
+            bool   riskOk   = _riskManager.CanTrade();
+            int    winRate   = _riskManager.DailyTrades > 0
+                ? (int)Math.Round(_riskManager.DailyWinRate * 100) : 0;
+            string riskStr  = $"{(riskOk ? V : X)}  {_riskManager.DailyTrades}/{MaxDailyTrades} trades  " +
+                              $"WR={winRate}%  P&L=${_riskManager.DailyPnL:F0}  " +
+                              $"sem={_riskManager.WeeklyTrades}/{MaxWeeklyTrades}";
 
             // Posición
             string posStr = _positionOpen
@@ -659,6 +780,14 @@ namespace NinjaTrader.NinjaScript.Strategies
         }
 
         // ─── Helper horario ───────────────────────────────────────────────────
+        private static int GetISOWeek(DateTime dt)
+        {
+            var day = System.Globalization.CultureInfo.InvariantCulture.Calendar
+                .GetWeekOfYear(dt, System.Globalization.CalendarWeekRule.FirstFourDayWeek,
+                               DayOfWeek.Monday);
+            return dt.Year * 100 + day;
+        }
+
         private TimeSpan HHMM(int hhmm) => new TimeSpan(hhmm / 100, hhmm % 100, 0);
 
         private bool EsHorarioCalidad()
@@ -783,6 +912,76 @@ namespace NinjaTrader.NinjaScript.Strategies
         [NinjaScriptProperty, Range(1, 20)]
         [Display(Name = "Pérdidas consecutivas máximas", Order = 3, GroupName = "5. Límites diarios")]
         public int MaxConsecLosses { get; set; }
+
+        [NinjaScriptProperty, Range(1, 200)]
+        [Display(Name = "Trades máximos por semana", Order = 4, GroupName = "5. Límites diarios")]
+        public int MaxWeeklyTrades { get; set; }
+
+        [NinjaScriptProperty, Range(0.01, 0.30)]
+        [Display(Name = "Pérdida semanal máxima (%)", Order = 5, GroupName = "5. Límites diarios",
+                 Description = "Detiene el trading cuando la pérdida semanal supera este % del capital.")]
+        public double MaxWeeklyLossPct { get; set; }
+
+        // 8. Entrada y calidad
+        [NinjaScriptProperty]
+        [Display(Name = "Entrada con orden límite en CloudPullback", Order = 1, GroupName = "8. Entrada y calidad",
+                 Description = "Usa orden límite en lugar de mercado para CloudPullback. Busca mejor precio pero puede no llenar.")]
+        public bool UseLimitEntry { get; set; }
+
+        [NinjaScriptProperty, Range(0, 20)]
+        [Display(Name = "Offset de la orden límite (ticks)", Order = 2, GroupName = "8. Entrada y calidad",
+                 Description = "Ticks por debajo del cierre (LONG) o encima (SHORT) para el precio límite.")]
+        public int LimitOffsetTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Filtro R:R mínimo", Order = 3, GroupName = "8. Entrada y calidad")]
+        public bool UseMinRR { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 5.0)]
+        [Display(Name = "R:R mínimo requerido (vs TP1)", Order = 4, GroupName = "8. Entrada y calidad",
+                 Description = "Distancia al TP1 dividida entre distancia al stop. Ej: 1.5 = TP1 debe estar a 1.5× el riesgo.")]
+        public double MinRR { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Salida por tiempo", Order = 5, GroupName = "8. Entrada y calidad")]
+        public bool UseTimeExit { get; set; }
+
+        [NinjaScriptProperty, Range(1, 100)]
+        [Display(Name = "Barras máximas en posición", Order = 6, GroupName = "8. Entrada y calidad",
+                 Description = "Cierra la posición si lleva este número de barras sin resolver.")]
+        public int MaxBarsInTrade { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Filtro distancia a S/R día anterior", Order = 7, GroupName = "8. Entrada y calidad",
+                 Description = "Evita entrar cuando el precio está cerca del High o Low del día anterior.")]
+        public bool UseSRFilter { get; set; }
+
+        [NinjaScriptProperty, Range(1, 100)]
+        [Display(Name = "Distancia mínima a S/R (ticks)", Order = 8, GroupName = "8. Entrada y calidad")]
+        public int SRDistanceTicks { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Filtro tasa de barras (mercado muerto/caótico)", Order = 9, GroupName = "8. Entrada y calidad")]
+        public bool UseBarRateFilter { get; set; }
+
+        [NinjaScriptProperty, Range(1, 30)]
+        [Display(Name = "Barras/hora mínimas", Order = 10, GroupName = "8. Entrada y calidad",
+                 Description = "Por debajo = mercado muerto. No opera.")]
+        public int MinBarsPerHour { get; set; }
+
+        [NinjaScriptProperty, Range(10, 200)]
+        [Display(Name = "Barras/hora máximas", Order = 11, GroupName = "8. Entrada y calidad",
+                 Description = "Por encima = mercado caótico. No opera.")]
+        public int MaxBarsPerHour { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Sizing adaptativo (reduce contratos si WR < umbral)", Order = 12, GroupName = "8. Entrada y calidad")]
+        public bool UseAdaptiveSizing { get; set; }
+
+        [NinjaScriptProperty, Range(10, 80)]
+        [Display(Name = "Umbral de win rate para reducir tamaño (%)", Order = 13, GroupName = "8. Entrada y calidad",
+                 Description = "Si el win rate del día cae bajo este %, los contratos se reducen a la mitad.")]
+        public int AdaptiveSizingThreshold { get; set; }
 
         // 6. Sesión
         [NinjaScriptProperty]

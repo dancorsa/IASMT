@@ -22,7 +22,7 @@ namespace NinjaTrader.NinjaScript.Strategies
     /// <summary>
     /// Calcula stops, targets y tamaño de posición.
     /// El cálculo varía según el SetupType del STASetupResult.
-    /// Controla también los límites diarios de operación.
+    /// Controla también los límites diarios y semanales de operación.
     /// </summary>
     public class STARiskManager
     {
@@ -54,16 +54,32 @@ namespace NinjaTrader.NinjaScript.Strategies
         public double MaxDailyLossPct         { get; set; } = 0.018;
         public double MaxDailyProfitPct       { get; set; } = 0.030;
 
+        // Límites semanales
+        public int    MaxWeeklyTrades         { get; set; } = 30;
+        public double MaxWeeklyLossPct        { get; set; } = 0.05;
+
+        // Factor de sizing adaptativo (0.5–1.0, ajustado externamente)
+        public double AdaptiveSizeFactor      { get; set; } = 1.0;
+
         // ─── Contadores diarios ────────────────────────────────────────────
         public int    DailyTrades              { get; private set; }
         public int    DailyTrendStartTrades    { get; private set; }
         public int    DailyCloudPullbackTrades { get; private set; }
-        public double DailyPnL                { get; private set; }
-        public int    ConsecutiveLosses       { get; private set; }
+        public double DailyPnL                 { get; private set; }
+        public int    ConsecutiveLosses        { get; private set; }
+        public int    DailyWins                { get; private set; }
+        public int    DailyLosses             { get; private set; }
 
-        /// <summary>
-        /// Calcular los parámetros de riesgo para un trade.
-        /// </summary>
+        // ─── Contadores semanales ─────────────────────────────────────────
+        public int    WeeklyTrades             { get; private set; }
+        public double WeeklyPnL               { get; private set; }
+
+        // ─── Propiedades calculadas ───────────────────────────────────────
+        public double DailyWinRate => DailyTrades > 0
+            ? (double)DailyWins / DailyTrades
+            : 0.0;
+
+        /// <summary>Calcular los parámetros de riesgo para un trade.</summary>
         public STARiskParameters Calculate(STASetupResult setup,
                                             double entryPrice,
                                             string direction,
@@ -85,21 +101,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (isTrendStart)
             {
-                // Tipo 1: stop basado en ancho de nube (entrada temprana, más riesgo)
                 stopDist = cloudWidth * StopCloudMultiplier;
             }
             else
             {
-                // Tipo 2: stop basado en extremo de la vela de rechazo + buffer
                 double distVela = isLong
                     ? entryPrice - rejCandleLow  + StopBufferTicks * tickSize
                     : rejCandleHigh - entryPrice + StopBufferTicks * tickSize;
                 stopDist = distVela;
             }
 
-            // Piso por ATR (aplicar el mayor)
             stopDist = Math.Max(stopDist, atr14 * StopATRMultiplier);
-            // Piso mínimo en ticks
             stopDist = Math.Max(stopDist, MinStopTicks * tickSize);
 
             double stopPrice = isLong
@@ -112,7 +124,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             double tp1Mult = isTrendStart ? TrendStart_TP1Mult : CloudPullback_TP1Mult;
             double tp2Mult = isTrendStart ? TrendStart_TP2Mult : CloudPullback_TP2Mult;
 
-            // Extender TP2 si Elliott indica Wave_3_Start con alta confianza
             if (elliottMultiplier >= 1.25 &&
                 (setup.ElliottContext?.Contains("Wave_3_Start") ?? false))
                 tp2Mult *= 1.30;
@@ -133,21 +144,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ? (int)Math.Floor(riskCapital / riskPerContract)
                 : 1;
 
-            // Ajuste por IA (0.5–1.0)
             contratos = (int)Math.Floor(contratos * aiRiskAdjustment);
-
-            // Multiplicador de Elliott (1.0–1.30)
             contratos = (int)Math.Floor(contratos * elliottMultiplier);
 
-            // Bonus por CloudPullback (mejor setup estadístico → 10% más)
             if (!isTrendStart)
                 contratos = (int)Math.Floor(contratos * 1.10);
 
-            // Penalización por mercado neutral
             if (marketContext == "Neutral")
                 contratos = (int)Math.Floor(contratos * NeutralContextMultiplier);
 
-            // Clamp: mínimo 1, máximo MaxContracts
+            // Sizing adaptativo (reduce contratos cuando win rate es bajo)
+            if (AdaptiveSizeFactor < 1.0)
+                contratos = (int)Math.Floor(contratos * AdaptiveSizeFactor);
+
             contratos = Math.Max(1, Math.Min(contratos, MaxContracts));
 
             return new STARiskParameters
@@ -162,20 +171,24 @@ namespace NinjaTrader.NinjaScript.Strategies
             };
         }
 
-        // ─── Control de límites diarios ────────────────────────────────────
+        // ─── Control de límites ────────────────────────────────────────────
 
         /// <summary>Verificar si se puede abrir un nuevo trade.</summary>
         public bool CanTrade(string setupType = "Any")
         {
-            if (DailyTrades         >= MaxDailyTrades)      return false;
-            if (ConsecutiveLosses   >= MaxConsecutiveLosses) return false;
+            if (DailyTrades       >= MaxDailyTrades)       return false;
+            if (WeeklyTrades      >= MaxWeeklyTrades)      return false;
+            if (ConsecutiveLosses >= MaxConsecutiveLosses) return false;
 
-            double maxLoss   = AccountCapital * MaxDailyLossPct;
-            double maxProfit = AccountCapital * MaxDailyProfitPct;
-            if (DailyPnL <= -maxLoss)   return false;
-            if (DailyPnL >=  maxProfit) return false;
+            double maxLoss       = AccountCapital * MaxDailyLossPct;
+            double maxProfit     = AccountCapital * MaxDailyProfitPct;
+            double maxWeeklyLoss = AccountCapital * MaxWeeklyLossPct;
 
-            if (setupType == "TrendStart"   && DailyTrendStartTrades    >= MaxTrendStartPerDay)  return false;
+            if (DailyPnL  <= -maxLoss)       return false;
+            if (DailyPnL  >=  maxProfit)     return false;
+            if (WeeklyPnL <= -maxWeeklyLoss) return false;
+
+            if (setupType == "TrendStart"    && DailyTrendStartTrades    >= MaxTrendStartPerDay)    return false;
             if (setupType == "CloudPullback" && DailyCloudPullbackTrades >= MaxCloudPullbackPerDay) return false;
 
             return true;
@@ -184,37 +197,45 @@ namespace NinjaTrader.NinjaScript.Strategies
         public void RegisterTrade(string setupType)
         {
             DailyTrades++;
-            if (setupType == "TrendStart")   DailyTrendStartTrades++;
-            else                             DailyCloudPullbackTrades++;
+            WeeklyTrades++;
+            if (setupType == "TrendStart") DailyTrendStartTrades++;
+            else                           DailyCloudPullbackTrades++;
         }
 
         public void RegisterTradeResult(double pnlUsd)
         {
-            DailyPnL += pnlUsd;
-            if (pnlUsd < 0) ConsecutiveLosses++;
-            else            ConsecutiveLosses = 0;
+            DailyPnL  += pnlUsd;
+            WeeklyPnL += pnlUsd;
+            if (pnlUsd < 0) { ConsecutiveLosses++; DailyLosses++; }
+            else            { ConsecutiveLosses = 0; DailyWins++;  }
         }
 
         public void ResetDaily()
         {
             DailyTrades = DailyTrendStartTrades = DailyCloudPullbackTrades = 0;
             DailyPnL    = 0;
+            DailyWins   = DailyLosses = 0;
             ConsecutiveLosses = 0;
         }
 
-        /// <summary>Calcular el precio del trailing stop después de que TP1 fue tocado.</summary>
-        public double CalculateTrailingStop(double currentPrice, string direction, double atr14)
+        public void ResetWeekly()
         {
-            double dist = atr14 * TrailingATRMultiplier;
+            WeeklyTrades = 0;
+            WeeklyPnL    = 0;
+        }
+
+        /// <summary>Calcular el precio del trailing stop después de que TP1 fue tocado.</summary>
+        public double CalculateTrailingStop(double currentPrice, string direction,
+                                             double atr14, double multiplierOverride = 0)
+        {
+            double mult = multiplierOverride > 0 ? multiplierOverride : TrailingATRMultiplier;
+            double dist = atr14 * mult;
             return direction == "LONG"
                 ? currentPrice - dist
                 : currentPrice + dist;
         }
 
-        /// <summary>
-        /// Devuelve los contratos para la entrada inicial en un scale-in.
-        /// La segunda entrada usa (totalContracts - resultado).
-        /// </summary>
+        /// <summary>Contratos para la entrada inicial en scale-in.</summary>
         public int CalculateInitialContracts(int totalContracts, double scaleInFactor = 0.6)
             => Math.Max(1, (int)Math.Ceiling(totalContracts * scaleInFactor));
     }
