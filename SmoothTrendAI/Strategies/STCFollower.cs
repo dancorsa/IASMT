@@ -67,6 +67,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         // Tasa de barras (rolling 60 min)
         private readonly Queue<DateTime> _barTimes = new Queue<DateTime>();
 
+        // Estado visible en el tablero — razón del último bloqueo o "✓ ENTRADA"
+        private string _dashSignalStatus = "—  sin señal";
+
         // ─── Nube visual ──────────────────────────────────────────────────────
         private SolidColorBrush _cloudUpBrush;
         private SolidColorBrush _cloudDownBrush;
@@ -278,6 +281,9 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Verificar límites diarios ─────────────────────────────────────
             if (!_riskManager.CanTrade())
             {
+                _dashSignalStatus = $"⚠ RIESGO  trades={_riskManager.DailyTrades}/{MaxDailyTrades}" +
+                                    $"  pérd={_riskManager.ConsecutiveLosses}/{MaxConsecLosses}" +
+                                    $"  P&L=${_riskManager.DailyPnL:F0}";
                 Print($"[STC-DIAG] Bar={CurrentBar} {Time[0]:HH:mm} BLOQUEADO: límites diarios " +
                       $"trades={_riskManager.DailyTrades}/{MaxDailyTrades} " +
                       $"pérdidas={_riskManager.ConsecutiveLosses}/{MaxConsecLosses} " +
@@ -307,11 +313,19 @@ namespace NinjaTrader.NinjaScript.Strategies
                 else if (_cloud.HasCrossDownSignal) { direction = "SHORT"; setupType = "TrendStart"; }
             }
 
-            if (direction == null) return;
+            if (direction == null)
+            {
+                _dashSignalStatus = "—  sin señal";
+                return;
+            }
+
+            // Con señal detectada, asumir "pendiente de filtros" hasta que pasen todos
+            _dashSignalStatus = $"↓ {direction}  {setupType}  evaluando filtros...";
 
             // ── Filtro horario ────────────────────────────────────────────────
             if (UseTimeFilter && !EsHorarioCalidad())
             {
+                _dashSignalStatus = $"⚠ HORARIO  {Time[0]:HH:mm}  fuera de {HoraInicio/100:D2}:{HoraInicio%100:D2}–{HoraFin/100:D2}:{HoraFin%100:D2}";
                 Print($"[STC-DIAG] BLOQUEADO TimeFilter: {direction} {setupType} {Time[0]:HH:mm}");
                 return;
             }
@@ -319,13 +333,16 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Cooldown ──────────────────────────────────────────────────────
             if (SetupCooldownBars > 0 && CurrentBar - _lastSetupBar < SetupCooldownBars)
             {
+                _dashSignalStatus = $"⚠ COOLDOWN  {CurrentBar - _lastSetupBar}/{SetupCooldownBars} barras desde último setup";
                 Print($"[STC-DIAG] BLOQUEADO Cooldown: {direction} {setupType} " +
                       $"barrasDesdeUltima={CurrentBar - _lastSetupBar} min={SetupCooldownBars}");
                 return;
             }
+
             // ── Filtro ADX (evitar zonas de indecisión) ───────────────────────
             if (UseADXFilter && _adx[0] < ADXMinTrend)
             {
+                _dashSignalStatus = $"⚠ ADX={_adx[0]:F1}  <{ADXMinTrend}  (mercado sin tendencia)";
                 Print($"[STC-DIAG] BLOQUEADO ADX: {direction} {setupType} " +
                       $"ADX={_adx[0]:F1} < {ADXMinTrend} (indecisión/neutro)");
                 return;
@@ -337,11 +354,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 int bph = _barTimes.Count;
                 if (bph < MinBarsPerHour)
                 {
+                    _dashSignalStatus = $"⚠ BARRATE  {bph} barras/h  <{MinBarsPerHour}  (mercado muerto)";
                     Print($"[STC-DIAG] BLOQUEADO BarRate: {bph} barras/hora < {MinBarsPerHour} (mercado muerto)");
                     return;
                 }
                 if (bph > MaxBarsPerHour)
                 {
+                    _dashSignalStatus = $"⚠ BARRATE  {bph} barras/h  >{MaxBarsPerHour}  (mercado caótico)";
                     Print($"[STC-DIAG] BLOQUEADO BarRate: {bph} barras/hora > {MaxBarsPerHour} (mercado caótico)");
                     return;
                 }
@@ -355,6 +374,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double minDist = SRDistanceTicks * TickSize;
                 if (distH < minDist || distL < minDist)
                 {
+                    _dashSignalStatus = $"⚠ S/R  PDH={_priorDayHigh:F2}  PDL={_priorDayLow:F2}  dist<{SRDistanceTicks}t";
                     Print($"[STC-DIAG] BLOQUEADO S/R: precio cerca de PDH={_priorDayHigh:F2} / PDL={_priorDayLow:F2} " +
                           $"(distancia mín={SRDistanceTicks}t)");
                     return;
@@ -366,6 +386,8 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Límite por tipo de setup ──────────────────────────────────────
             if (!_riskManager.CanTrade(setupType))
             {
+                _dashSignalStatus = $"⚠ RIESGO  límite tipo {setupType}" +
+                                    $"  (sem={_riskManager.WeeklyTrades}/{MaxWeeklyTrades})";
                 Print($"[STC-DIAG] BLOQUEADO RiskManager por tipo: {setupType}");
                 return;
             }
@@ -409,11 +431,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double rr       = stopDist > 0 ? tp1Dist / stopDist : 0;
                 if (rr < MinRR)
                 {
+                    _dashSignalStatus = $"⚠ R:R={rr:F2}  <{MinRR}  (ratio insuficiente)";
                     Print($"[STC-DIAG] BLOQUEADO R:R: {direction} {setupType} R:R={rr:F2} < {MinRR}");
                     return;
                 }
             }
 
+            _dashSignalStatus = $"✓ {direction}  {setupType}  —  ENTRADA";
             EjecutarEntrada(direction, setupType, risk);
         }
 
@@ -765,6 +789,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             string txt =
                 "── STCFollower ──────────────────────────\n" +
                 $" Señal   : {senal}\n"                       +
+                $" Estado  : {_dashSignalStatus}\n"           +
                 "─────────────────────────────────────────\n" +
                 $" Horario : {timeStr}\n"                     +
                 $" ADX     : {adxStr}\n"                      +

@@ -71,7 +71,8 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool     _usesM15Secondary;
 
         // ─── Estado del tablero de filtros ─────────────────────────────────
-        private string _dashLastAiResult = "—  (sin señal aún)";
+        private string _dashLastAiResult  = "—  (sin señal aún)";
+        private string _dashSignalStatus  = "—  sin señal";
 
         // ─── VWAP acumulado (calculado manualmente, sin dependencia de terceros) ──
         private double   _vwapSumPV;
@@ -432,34 +433,60 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (!setup.IsValidSetup)
             {
+                _dashSignalStatus = "—  sin señal";
                 // Diagnóstico: imprime estado cada 100 barras para verificar que las señales llegan
                 if (CurrentBar % 100 == 0)
                     Print($"[STA-DIAG] Bar={CurrentBar} CX↑={_cloud.HasCrossUpSignal} CX↓={_cloud.HasCrossDownSignal} Touch↑={_cloud.TouchedCloudFromAbove} Touch↓={_cloud.TouchedCloudFromBelow} DirDiaria={_dailyFilter.AllowedDirection}");
                 return;
             }
 
+            // Señal detectada — marcar como pendiente de filtros
+            _dashSignalStatus = $"↓ {setup.Direction}  {setup.SetupType}  evaluando filtros...";
+
             Print($"[STA] Setup VÁLIDO: {setup.SetupType} {setup.Direction} conf={setup.BaseConfidence:F2} {Time[0]:HH:mm}");
 
             // Cooldown: ignorar señales repetidas mientras el precio roza la nube
-            if (SetupCooldownBars > 0 && CurrentBar - _lastSetupBar < SetupCooldownBars) return;
+            if (SetupCooldownBars > 0 && CurrentBar - _lastSetupBar < SetupCooldownBars)
+            {
+                _dashSignalStatus = $"⚠ COOLDOWN  {CurrentBar - _lastSetupBar}/{SetupCooldownBars} barras desde último setup";
+                return;
+            }
             _lastSetupBar = CurrentBar;
 
             // Verificar límite específico del tipo de setup
-            if (!_riskManager.CanTrade(setup.SetupType)) return;
+            if (!_riskManager.CanTrade(setup.SetupType))
+            {
+                _dashSignalStatus = $"⚠ RIESGO  límite tipo {setup.SetupType}" +
+                                    $"  trades={_riskManager.DailyTrades}/{MaxDailyTrades}" +
+                                    $"  sem={_riskManager.WeeklyTrades}/{MaxWeeklyTrades}";
+                return;
+            }
 
             // ── Filtro de dirección permitida ─────────────────────────────
-            if (DireccionPermitida == STADireccionPermitida.SoloLong  && setup.Direction == "SHORT") { LogRechazo(setup, "DireccionFiltro", 0, "Solo LONG permitido",  0); return; }
-            if (DireccionPermitida == STADireccionPermitida.SoloShort && setup.Direction == "LONG")  { LogRechazo(setup, "DireccionFiltro", 0, "Solo SHORT permitido", 0); return; }
+            if (DireccionPermitida == STADireccionPermitida.SoloLong  && setup.Direction == "SHORT")
+            {
+                _dashSignalStatus = "⚠ DIRECCIÓN  solo LONG permitido";
+                LogRechazo(setup, "DireccionFiltro", 0, "Solo LONG permitido", 0);
+                return;
+            }
+            if (DireccionPermitida == STADireccionPermitida.SoloShort && setup.Direction == "LONG")
+            {
+                _dashSignalStatus = "⚠ DIRECCIÓN  solo SHORT permitido";
+                LogRechazo(setup, "DireccionFiltro", 0, "Solo SHORT permitido", 0);
+                return;
+            }
 
             // ── Filtro RSI: no entrar en zona extrema opuesta ─────────────
             double rsiM15 = ObtenerRsiM15();
             if (setup.Direction == "LONG"  && rsiM15 > 70)
             {
+                _dashSignalStatus = $"⚠ RSI={rsiM15:F1}  >70  (sobrecompra — no LONG)";
                 LogRechazo(setup, "RSI_Extremo", rsiM15, $"RSI={rsiM15:F1}>70", 0);
                 return;
             }
             if (setup.Direction == "SHORT" && rsiM15 < 30)
             {
+                _dashSignalStatus = $"⚠ RSI={rsiM15:F1}  <30  (sobreventa — no SHORT)";
                 LogRechazo(setup, "RSI_Extremo", rsiM15, $"RSI={rsiM15:F1}<30", 0);
                 return;
             }
@@ -467,6 +494,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Filtro de horario de calidad ──────────────────────────────
             if (UseQualityTimeFilter && !EsHorarioCalidad())
             {
+                _dashSignalStatus = $"⚠ HORARIO  {Time[0]:HH:mm}  fuera de {HoraInicio/100:D2}:{HoraInicio%100:D2}–{HoraFin/100:D2}:{HoraFin%100:D2}";
                 LogRechazo(setup, "TimeFilter", rsiM15, "Fuera de ventana 10:00-11:30 / 14:00-15:30", 0);
                 return;
             }
@@ -478,8 +506,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                               (setup.Direction == "SHORT" && Close[0] <= _currentVWAP);
                 if (!vwapOk)
                 {
-                    LogRechazo(setup, "VWAP", rsiM15,
-                               $"Precio={Close[0]:F2} VWAP={_currentVWAP:F2}", 0);
+                    _dashSignalStatus = $"⚠ VWAP  precio={Close[0]:F2}  vwap={_currentVWAP:F2}" +
+                                        $"  (necesita {(setup.Direction == "LONG" ? "precio≥VWAP" : "precio≤VWAP")})";
+                    LogRechazo(setup, "VWAP", rsiM15, $"Precio={Close[0]:F2} VWAP={_currentVWAP:F2}", 0);
                     return;
                 }
             }
@@ -488,16 +517,36 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (UseMultiTimeframeFilter && CurrentBars[IDX_DAILY] >= 2)
             {
                 bool dailyBullish = Closes[IDX_DAILY][0] > Closes[IDX_DAILY][1];
-                if (setup.Direction == "LONG"  && !dailyBullish) { LogRechazo(setup, "MTF", rsiM15, "Tendencia diaria bajista", 0); return; }
-                if (setup.Direction == "SHORT" && dailyBullish)  { LogRechazo(setup, "MTF", rsiM15, "Tendencia diaria alcista", 0); return; }
+                if (setup.Direction == "LONG"  && !dailyBullish)
+                {
+                    _dashSignalStatus = "⚠ MTF  tendencia diaria bajista — no LONG";
+                    LogRechazo(setup, "MTF", rsiM15, "Tendencia diaria bajista", 0);
+                    return;
+                }
+                if (setup.Direction == "SHORT" && dailyBullish)
+                {
+                    _dashSignalStatus = "⚠ MTF  tendencia diaria alcista — no SHORT";
+                    LogRechazo(setup, "MTF", rsiM15, "Tendencia diaria alcista", 0);
+                    return;
+                }
             }
 
             // ── Filtro tasa de barras ─────────────────────────────────────
             if (UseBarRateFilter)
             {
                 int bph = _barTimes.Count;
-                if (bph < MinBarsPerHour) { LogRechazo(setup, "BarRate", rsiM15, $"{bph} barras/hora < {MinBarsPerHour} (mercado muerto)", 0); return; }
-                if (bph > MaxBarsPerHour) { LogRechazo(setup, "BarRate", rsiM15, $"{bph} barras/hora > {MaxBarsPerHour} (mercado caótico)", 0); return; }
+                if (bph < MinBarsPerHour)
+                {
+                    _dashSignalStatus = $"⚠ BARRATE  {bph} barras/h  <{MinBarsPerHour}  (mercado muerto)";
+                    LogRechazo(setup, "BarRate", rsiM15, $"{bph} barras/hora < {MinBarsPerHour} (mercado muerto)", 0);
+                    return;
+                }
+                if (bph > MaxBarsPerHour)
+                {
+                    _dashSignalStatus = $"⚠ BARRATE  {bph} barras/h  >{MaxBarsPerHour}  (mercado caótico)";
+                    LogRechazo(setup, "BarRate", rsiM15, $"{bph} barras/hora > {MaxBarsPerHour} (mercado caótico)", 0);
+                    return;
+                }
             }
 
             // ── Filtro distancia a S/R día anterior ───────────────────────
@@ -508,6 +557,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 double minDist = SRDistanceTicks * TickSize;
                 if (distH < minDist || distL < minDist)
                 {
+                    _dashSignalStatus = $"⚠ S/R  PDH={_priorDayHigh:F2}  PDL={_priorDayLow:F2}  dist<{SRDistanceTicks}t";
                     LogRechazo(setup, "SRFilter", rsiM15,
                         $"Cerca de PDH={_priorDayHigh:F2}/PDL={_priorDayLow:F2} mín={SRDistanceTicks}t", 0);
                     return;
@@ -544,9 +594,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Filtro R:R mínimo ─────────────────────────────────────────
             if (UseMinRR && rrRatio < MinRR)
             {
+                _dashSignalStatus = $"⚠ R:R={rrRatio:F2}  <{MinRR}  (ratio insuficiente)";
                 LogRechazo(setup, "MinRR", rsiM15, $"R:R={rrRatio:F2} < {MinRR}", rrRatio);
                 return;
             }
+
+            _dashSignalStatus = $"↓ {setup.Direction}  {setup.SetupType}  R:R={rrRatio:F2}  →  consultando IA...";
 
             // ── Construir payload para la IA ───────────────────────────────
             var payload = new STASignalPayload
@@ -624,6 +677,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Dibujar X si la IA rechaza ────────────────────────────────
             if (!aiResult.Approve || aiResult.Confidence < AIMinConfidence)
             {
+                _dashSignalStatus = $"⚠ IA  conf={aiResult.Confidence:P0}  {aiResult.Reason?.Substring(0, Math.Min(35, aiResult.Reason?.Length ?? 0))}";
                 Draw.Text(this, $"Rej_{CurrentBar}", "✕", 0,
                     setup.Direction == "LONG"
                         ? Low[0]  - TickSize * 6
@@ -645,6 +699,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             );
 
             // ── Ejecutar entrada ───────────────────────────────────────────
+            _dashSignalStatus = $"✓ {setup.Direction}  {setup.SetupType}  R:R={rrRatio:F2}  IA={aiResult.Confidence:P0}  —  ENTRADA";
             EjecutarEntrada(setup, riskFinal, aiResult, rsiM15, payload);
         }
 
@@ -1429,6 +1484,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             string txt =
                 "── SmoothTrendAI ────────────────────────\n"  +
                 $" Señal   : {senal}\n"                         +
+                $" Estado  : {_dashSignalStatus}\n"             +
                 $" Dirección: {dirStr}\n"                       +
                 "─────────────────────────────────────────\n"  +
                 $" Volumen : {volStr}\n"                        +
