@@ -6,10 +6,8 @@
 //   Tipo 1 (TrendStart)    → cruce de TriggerLine sobre SmoothTrendLine
 //   Tipo 2 (CloudPullback) → toque de nube + N barras en tendencia
 //
-// Sin filtros adicionales (no Kaufman, no Elliott, no RSI/VWAP, no IA).
-// Solo stop/TP/sizing por riesgo % y gestión de posición.
-//
-// Reutiliza: SmoothTrendCloud, STARiskManager, STATradeJournal
+// Gestión: stop calculado + TP1 (2 ctrs 1:1) + TP2 (2 ctrs 2:1) + TP3 (2 ctrs 3:1).
+// NT8 maneja todos los fills nativamente via brackets de 3 slots.
 // ============================================================
 #region Using declarations
 using System;
@@ -43,19 +41,17 @@ namespace NinjaTrader.NinjaScript.Strategies
         private double         _activeStopPrice;
         private double         _activeTarget1;
         private double         _activeTarget2;
-        private bool           _tp1Hit;
-        private double         _trailingStopPrice;
-        private bool           _trailingActive;
-        private bool           _breakEvenTriggered;
-        private double         _ratchetRiskPoints;  // |entry - initialStop| en precio
-        private int            _ratchetLevel;       // R entero bloqueado más alto (0=BE, 2=2R, …)
-        private bool           _pendingTP2Bracket;  // poner SetProfitTarget(TP2) en la barra siguiente a TP1
+        private double         _activeTarget3;
         private STATradeRecord _activeRecord;
 
+        // ─── Breakeven ────────────────────────────────────────────────────────
+        private bool _breakEvenTriggered;
+
         // ─── Auxiliares ───────────────────────────────────────────────────────
-        private DateTime _lastDailyReset  = DateTime.MinValue;
-        private int      _lastSetupBar    = -999;
-        private double   _lastExitPrice   = 0;   // precio real del último fill de salida
+        private DateTime _lastDailyReset = DateTime.MinValue;
+        private int      _lastSetupBar   = -999;
+        private double   _lastExitPrice  = 0;
+        private ADX      _adx;
 
         // ─── Nube visual ──────────────────────────────────────────────────────
         private SolidColorBrush _cloudUpBrush;
@@ -75,6 +71,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StartBehavior                = StartBehavior.WaitUntilFlat;
                 IsFillLimitOnTouch           = false;
                 Slippage                     = 0;
+                EntriesPerDirection          = 3;   // n1=TP1 + n2=TP2 + n3=TP3, tres slots en la misma dirección
 
                 // Nube
                 TriggerPeriod           = 12;
@@ -85,41 +82,46 @@ namespace NinjaTrader.NinjaScript.Strategies
                 EnterOnTipo1 = true;
                 EnterOnTipo2 = true;
 
-                // Riesgo — optimizado para NQ full / challenge de fondeo
+                // Riesgo
                 AccountCapital      = 50_000.0;
-                RiskPctPerTrade     = 0.005;   // 0.5% = $250/trade en MNQ con 5 contratos
-                MaxContracts        = 5;        // MNQ: 5 ctrs × 25pts × $2 = $250 riesgo típico
-                StopCloudMultiplier = 1.5;      // nube de NQ ya es amplia
-                StopBufferTicks     = 6;        // más ruido intra-barra en NQ
+                RiskPctPerTrade     = 0.005;
+                MaxContracts        = 6;
+                StopCloudMultiplier = 1.5;
+                StopBufferTicks     = 6;
                 StopATRMultiplier   = 1.5;
-                MinStopTicks        = 20;       // mínimo 5 puntos en NQ
-                TP1Ratio            = 2.0;
-                TP2Ratio            = 3.0;      // NQ puede revertir rápido
-                TrailAfterTP1       = true;
+                MinStopTicks        = 20;
+                UseFixedContracts   = true;
+                FixedContracts      = 6;
+                ContratoTP1         = 2;
+                ContratoTP2         = 2;
+                ContratoTP3         = 2;
+                TP1Ratio            = 1.0;
+                TP2Ratio            = 2.0;
+                TP3Ratio            = 3.0;
 
-                // Trailing stop — ATR×1.5 para dar holgura en NQ
-                UseRatchetStop         = true;
-                TrailAfterBreakEven    = true;
-                UseFixedTrail          = false;
-                TrailingPoints         = 30.0;
-                TrailingATRMultiplier  = 1.5;
+                // Breakeven
+                UseBreakEven       = true;
+                BreakEvenPoints    = 0;    // 0 = activar en TP1
+                BreakEvenLockTicks = 4;
 
                 // Límites diarios
-                MaxDailyLossPct  = 0.018;  // 1.8% = $900 — buffer antes del límite real de $1000/día
-                MaxDailyTrades   = 6;
+                MaxDailyLossPct  = 0.018;
+                MaxDailyTrades   = 10;
                 MaxConsecLosses  = 3;
 
-                // Breakeven — 15 puntos alcanzables en 5-min NQ
-                UseBreakEven       = true;
-                BreakEvenPoints    = 15.0;
-                BreakEvenLockTicks = 4;    // ~$80 para cubrir comisiones
-
-                // Sesión (opcionales, espejo del indicador)
+                // Sesión
                 UseTimeFilter     = false;
+                HoraInicio        = 1000;   // 10:00
+                HoraFin           = 1530;   // 15:30
                 SetupCooldownBars = 3;
+                UseADXFilter      = true;
+                ADXPeriod         = 14;
+                ADXMinTrend       = 20;
 
                 // Visualización
                 ShowCloudInStrategy = true;
+                ShowDashboard       = true;
+                DashboardPosition   = TextPosition.TopRight;
             }
             else if (State == State.Configure)
             {
@@ -128,57 +130,37 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 _riskManager = new STARiskManager
                 {
-                    AccountCapital        = AccountCapital,
-                    RiskPctPerTrade       = RiskPctPerTrade,
-                    MaxContracts          = MaxContracts,
-                    StopCloudMultiplier   = StopCloudMultiplier,
-                    StopBufferTicks       = StopBufferTicks,
-                    StopATRMultiplier     = StopATRMultiplier,
-                    MinStopTicks          = MinStopTicks,
-                    TrailAfterTP1         = TrailAfterTP1,
-                    // Ambos tipos usan los mismos ratios configurados por el usuario
-                    TrendStart_TP1Mult    = TP1Ratio,
-                    TrendStart_TP2Mult    = TP2Ratio,
-                    CloudPullback_TP1Mult = TP1Ratio,
-                    CloudPullback_TP2Mult = TP2Ratio,
-                    // Límites diarios configurables por parámetro
+                    AccountCapital         = AccountCapital,
+                    RiskPctPerTrade        = RiskPctPerTrade,
+                    MaxContracts           = MaxContracts,
+                    StopCloudMultiplier    = StopCloudMultiplier,
+                    StopBufferTicks        = StopBufferTicks,
+                    StopATRMultiplier      = StopATRMultiplier,
+                    MinStopTicks           = MinStopTicks,
+                    TrailAfterTP1          = false,
+                    TrendStart_TP1Mult     = TP1Ratio,
+                    TrendStart_TP2Mult     = TP2Ratio,
+                    CloudPullback_TP1Mult  = TP1Ratio,
+                    CloudPullback_TP2Mult  = TP2Ratio,
                     MaxDailyLossPct        = MaxDailyLossPct,
                     MaxDailyTrades         = MaxDailyTrades,
                     MaxConsecutiveLosses   = MaxConsecLosses,
-                    // Sin límite por tipo — el tope general MaxDailyTrades controla todo
                     MaxTrendStartPerDay    = MaxDailyTrades,
                     MaxCloudPullbackPerDay = MaxDailyTrades,
-                    TrailingATRMultiplier  = TrailingATRMultiplier,
-                    MaxDailyProfitPct      = 1.0   // sin límite de ganancia diaria
+                    TrailingATRMultiplier  = 1.5,
+                    MaxDailyProfitPct      = 1.0
                 };
 
                 _journal = new STATradeJournal();
             }
             else if (State == State.DataLoaded)
             {
-                // Instanciar el indicador con los parámetros de la nube.
-                // Las features visuales/IA/alertas del indicador se desactivan:
-                // la estrategia gestiona sus propias entradas y visualizaciones.
                 _cloud = SmoothTrendCloud(
                     TriggerPeriod, SmoothPeriod, MinTrendBarsForPullback,
-                    10,             // RegionOpacity
-                    Brushes.Cyan,   // UpTrendColor
-                    Brushes.Orange, // DownTrendColor
-                    false,          // ShowSignalArrows   — estrategia dibuja sus propios marcadores
-                    false,          // ShowType2Arrows
-                    false,          // EnableAIValidation
-                    "Claude",       // AIProvider
-                    "",             // AIApiKey
-                    0.60,           // AIMinConfidence
-                    false,          // EnableAlerts
-                    false,          // ShowDashboard
-                    false,          // UseM15Confluence
-                    false,          // UseTimeFilter      — manejado aquí
-                    false,          // LogRejectedSignals
-                    false,          // ShowEntryLevels
-                    3,              // LevelStopBufferTicks
-                    2.0,            // LevelTP1Ratio
-                    4.0);           // LevelTP2Ratio
+                    10, Brushes.Cyan, Brushes.Orange,
+                    false, false, false, "Claude", "", 0.60,
+                    false, false, false, false, false, false,
+                    3, 2.0, 4.0);
 
                 _cloudUpBrush   = new SolidColorBrush(Color.FromArgb(28, 0, 180, 255));
                 _cloudDownBrush = new SolidColorBrush(Color.FromArgb(28, 255, 120, 0));
@@ -186,11 +168,10 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _cloudDownBrush.Freeze();
 
                 _journal.Open(Instrument.FullName);
+                _adx = ADX(ADXPeriod);
             }
             else if (State == State.Realtime)
             {
-                // Resetear contadores al entrar en tiempo real para ignorar
-                // los trades procesados sobre barras históricas de hoy.
                 _riskManager.ResetDaily();
                 _lastDailyReset = DateTime.Today;
             }
@@ -205,7 +186,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (BarsInProgress != 0) return;
             if (CurrentBar < BarsRequiredToTrade) return;
 
-            // ── Nube visual: líneas + fondo de barra ─────────────────────────
+            // ── Nube visual ───────────────────────────────────────────────────
             if (ShowCloudInStrategy && _cloud != null && _cloud.TriggerValue > 0)
             {
                 Values[0][0]   = _cloud.TriggerValue;
@@ -213,13 +194,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 BackBrushes[0] = _cloud.CurrentCloudColor == "Up" ? _cloudUpBrush : _cloudDownBrush;
             }
 
-            // ── Detectar cierre de posición por el broker ─────────────────────
+            // ── Tablero de condiciones ────────────────────────────────────────
+            if (ShowDashboard && _cloud != null && _adx != null)
+                DibujarTablero();
+
+            // ── Detectar cierre por broker (stop o TP llenó) ─────────────────
             if (_positionOpen && Position.MarketPosition == MarketPosition.Flat)
             {
                 FinalizarPosicion("BrokerExit");
                 return;
             }
-            if (_entrySubmitted && !_positionOpen) return;
+            if (_entrySubmitted && !_positionOpen) return;   // esperando fill
 
             // ── Reset diario ──────────────────────────────────────────────────
             if (Time[0].Date != _lastDailyReset.Date)
@@ -228,7 +213,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _lastDailyReset = Time[0].Date;
             }
 
-            // ── Gestión de posición abierta (máxima prioridad) ───────────────
+            // ── Posición abierta: solo salida por cruce opuesto ──────────────
             if (_positionOpen)
             {
                 GestionarPosicionAbierta();
@@ -246,14 +231,13 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // ── Diagnóstico: estado de señales del cloud en cada barra ────────
+            // ── Diagnóstico ───────────────────────────────────────────────────
             Print($"[STC-DIAG] Bar={CurrentBar} {Time[0]:HH:mm} " +
                   $"CX↑={_cloud.HasCrossUpSignal} CX↓={_cloud.HasCrossDownSignal} " +
                   $"Touch↑={_cloud.TouchedCloudFromAbove} Touch↓={_cloud.TouchedCloudFromBelow} " +
                   $"BarsEnColor={_cloud.BarsInCurrentColor} Nube={_cloud.CurrentCloudColor}");
 
-            // ── Detectar señal (réplica exacta del indicador) ─────────────────
-            // Tipo 2 tiene prioridad sobre Tipo 1 (igual que en STASetupClassifier)
+            // ── Detectar señal ────────────────────────────────────────────────
             string direction = null;
             string setupType = null;
 
@@ -270,20 +254,28 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (direction == null) return;
 
-            // ── Filtro horario (opcional, espejo del indicador) ───────────────
+            // ── Filtro horario ────────────────────────────────────────────────
             if (UseTimeFilter && !EsHorarioCalidad())
             {
                 Print($"[STC-DIAG] BLOQUEADO TimeFilter: {direction} {setupType} {Time[0]:HH:mm}");
                 return;
             }
 
-            // ── Cooldown anti-señales repetidas ───────────────────────────────
+            // ── Cooldown ──────────────────────────────────────────────────────
             if (SetupCooldownBars > 0 && CurrentBar - _lastSetupBar < SetupCooldownBars)
             {
                 Print($"[STC-DIAG] BLOQUEADO Cooldown: {direction} {setupType} " +
                       $"barrasDesdeUltima={CurrentBar - _lastSetupBar} min={SetupCooldownBars}");
                 return;
             }
+            // ── Filtro ADX (evitar zonas de indecisión) ───────────────────────
+            if (UseADXFilter && _adx[0] < ADXMinTrend)
+            {
+                Print($"[STC-DIAG] BLOQUEADO ADX: {direction} {setupType} " +
+                      $"ADX={_adx[0]:F1} < {ADXMinTrend} (indecisión/neutro)");
+                return;
+            }
+
             _lastSetupBar = CurrentBar;
 
             // ── Límite por tipo de setup ──────────────────────────────────────
@@ -293,16 +285,15 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
-            // ── Calcular parámetros de riesgo ─────────────────────────────────
+            // ── Calcular riesgo ────────────────────────────────────────────────
             double atr14   = ATR(14)[0];
             double tickVal = Instrument.MasterInstrument.PointValue * TickSize;
 
-            // STASetupResult mínimo — solo SetupType es relevante para STARiskManager
             var setupInfo = new STASetupResult
             {
                 SetupType      = setupType,
                 Direction      = direction,
-                ElliottContext = ""   // sin Elliott, el multiplier TP2 no se expande
+                ElliottContext = ""
             };
 
             var risk = _riskManager.Calculate(
@@ -311,45 +302,97 @@ namespace NinjaTrader.NinjaScript.Strategies
                 direction,
                 _cloud.CloudWidth,
                 atr14,
-                Low[0],            // rejCandleLow  — extremo de la vela actual (Tipo 2)
-                High[0],           // rejCandleHigh
+                Low[0],
+                High[0],
                 TickSize,
                 tickVal,
-                aiRiskAdjustment:  1.0,    // sin IA, sin ajuste de tamaño
-                elliottMultiplier: 1.0,    // sin Elliott
-                marketContext:     "Bullish"); // evita penalización por contexto neutral
+                aiRiskAdjustment:  1.0,
+                elliottMultiplier: 1.0,
+                marketContext:     "Bullish");
 
             EjecutarEntrada(direction, setupType, risk);
         }
 
-        // ─── Entrada ──────────────────────────────────────────────────────────
+        // ─── Entrada con brackets nativos NT8 ────────────────────────────────
+        // Tres slots: TP1 (2 ctrs, 1:1) + TP2 (2 ctrs, 2:1) + TP3 (resto, 3:1).
+        // SetStopLoss + SetProfitTarget se llaman ANTES de EnterLong/Short;
+        // NT8 aplica los brackets automáticamente al fill de cada slot.
         private void EjecutarEntrada(string direction, string setupType, STARiskParameters risk)
         {
-            bool   isLong    = direction == "LONG";
-            string entryName = isLong ? "STC_Long" : "STC_Short";
+            bool isLong = direction == "LONG";
+            int  tp1Qty, tp2Qty, tp3Qty;
 
-            SetStopLoss(entryName, CalculationMode.Price, risk.StopPrice, false);
+            if (UseFixedContracts)
+            {
+                tp1Qty = Math.Max(1, ContratoTP1);
+                tp2Qty = Math.Max(0, ContratoTP2);
+                tp3Qty = Math.Max(0, ContratoTP3);
+            }
+            else
+            {
+                int total = risk.Contracts;
+                if (total <= 1)
+                {
+                    tp1Qty = Math.Max(1, total); tp2Qty = 0; tp3Qty = 0;
+                }
+                else if (total == 2)
+                {
+                    tp1Qty = 1; tp2Qty = 1; tp3Qty = 0;
+                }
+                else
+                {
+                    int tercio = total / 3;
+                    tp1Qty = tercio;
+                    tp2Qty = tercio;
+                    tp3Qty = total - 2 * tercio;
+                }
+            }
+            string n1       = isLong ? "STC_TP1_Long"  : "STC_TP1_Short";
+            string n2       = isLong ? "STC_TP2_Long"  : "STC_TP2_Short";
+            string n3       = isLong ? "STC_TP3_Long"  : "STC_TP3_Short";
 
-            if (isLong) EnterLong (risk.Contracts, entryName);
-            else        EnterShort(risk.Contracts, entryName);
+            // TP3 calculado localmente: misma distancia de stop × TP3Ratio
+            double stopDist     = isLong ? (Close[0] - risk.StopPrice) : (risk.StopPrice - Close[0]);
+            double target3Price = isLong
+                ? Close[0] + stopDist * TP3Ratio
+                : Close[0] - stopDist * TP3Ratio;
+            target3Price = Math.Round(target3Price / TickSize) * TickSize;
 
-            _entrySubmitted    = true;
-            _positionOpen      = false;
-            _activeDirection   = direction;
-            _activeSetupType   = setupType;
-            _activeEntryPrice  = Close[0];
-            _activeStopPrice   = risk.StopPrice;
-            _activeTarget1     = risk.Target1Price;
-            _activeTarget2     = risk.Target2Price;
-            _tp1Hit             = false;
-            _trailingActive     = false;
-            _trailingStopPrice  = 0;
-            _lastExitPrice      = 0;
+            // Slot TP1 (1:1)
+            SetStopLoss   (n1, CalculationMode.Price, risk.StopPrice,    false);
+            SetProfitTarget(n1, CalculationMode.Price, risk.Target1Price);
+            if (isLong) EnterLong (tp1Qty, n1);
+            else        EnterShort(tp1Qty, n1);
+
+            // Slot TP2 (2:1)
+            if (tp2Qty > 0)
+            {
+                SetStopLoss   (n2, CalculationMode.Price, risk.StopPrice,    false);
+                SetProfitTarget(n2, CalculationMode.Price, risk.Target2Price);
+                if (isLong) EnterLong (tp2Qty, n2);
+                else        EnterShort(tp2Qty, n2);
+            }
+
+            // Slot TP3 (3:1)
+            if (tp3Qty > 0)
+            {
+                SetStopLoss   (n3, CalculationMode.Price, risk.StopPrice,  false);
+                SetProfitTarget(n3, CalculationMode.Price, target3Price);
+                if (isLong) EnterLong (tp3Qty, n3);
+                else        EnterShort(tp3Qty, n3);
+            }
+
+            _entrySubmitted     = true;
+            _positionOpen       = false;
+            _activeDirection    = direction;
+            _activeSetupType    = setupType;
+            _activeEntryPrice   = Close[0];
+            _activeStopPrice    = risk.StopPrice;
+            _activeTarget1      = risk.Target1Price;
+            _activeTarget2      = risk.Target2Price;
+            _activeTarget3      = target3Price;
             _breakEvenTriggered = false;
-            _ratchetRiskPoints  = Math.Abs(Close[0] - risk.StopPrice);
-            _ratchetLevel       = 0;
-
-            _riskManager.RegisterTrade(setupType);
+            _lastExitPrice      = 0;
 
             _activeRecord = new STATradeRecord
             {
@@ -359,7 +402,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Direction                = direction,
                 SetupType                = setupType,
                 EntryPrice               = Close[0],
-                Contracts                = risk.Contracts,
+                Contracts                = tp1Qty + tp2Qty + tp3Qty,
                 TriggerLineAtEntry       = _cloud.TriggerValue,
                 SmoothLineAtEntry        = _cloud.SmoothValue,
                 CloudWidthAtEntry        = _cloud.CloudWidth,
@@ -368,7 +411,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ConsecutiveLossesAtEntry = _riskManager.ConsecutiveLosses
             };
 
-            // ── Dibujar señal en chart ─────────────────────────────────────────
+            // Dibujar señal en chart
             string tag = $"E_{CurrentBar}";
             if (setupType == "TrendStart")
             {
@@ -385,179 +428,76 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Brushes.Lime, DashStyleHelper.Dash, 2);
             Draw.HorizontalLine(this, "STC_TP2", risk.Target2Price,
                 Brushes.DodgerBlue, DashStyleHelper.Dash, 1);
+            Draw.HorizontalLine(this, "STC_TP3", target3Price,
+                Brushes.Gold, DashStyleHelper.Dash, 1);
             Draw.Text(this, "STC_TP1_lbl", $"TP1 {risk.Target1Price:F2}",
                 0, risk.Target1Price + (isLong ? TickSize * 2 : -TickSize * 2), Brushes.Lime);
             Draw.Text(this, "STC_TP2_lbl", $"TP2 {risk.Target2Price:F2}",
                 0, risk.Target2Price + (isLong ? TickSize * 2 : -TickSize * 2), Brushes.DodgerBlue);
+            Draw.Text(this, "STC_TP3_lbl", $"TP3 {target3Price:F2}",
+                0, target3Price + (isLong ? TickSize * 2 : -TickSize * 2), Brushes.Gold);
 
             Print($"[STCFollower] {direction} {setupType} | " +
                   $"Entry={Close[0]:F2} Stop={risk.StopPrice:F2} " +
-                  $"TP1={risk.Target1Price:F2} TP2={risk.Target2Price:F2} Ctrs={risk.Contracts}");
+                  $"TP1={risk.Target1Price:F2} TP2={risk.Target2Price:F2} TP3={target3Price:F2} " +
+                  $"Ctrs={tp1Qty + tp2Qty + tp3Qty} (TP1={tp1Qty} TP2={tp2Qty} TP3={tp3Qty})");
         }
 
-        // ─── Gestión de posición abierta ──────────────────────────────────────
+        // ─── Gestión: cruce opuesto + breakeven ──────────────────────────────
+        // Stops y TPs los gestiona NT8 nativamente via brackets.
+        // SetStopLoss en esta función solo mueve el stop existente (una vez, al BE).
         private void GestionarPosicionAbierta()
         {
-            bool   isLong    = _activeDirection == "LONG";
-            string entryName = isLong ? "STC_Long" : "STC_Short";
+            bool   isLong = _activeDirection == "LONG";
+            string n1     = isLong ? "STC_TP1_Long"  : "STC_TP1_Short";
+            string n2     = isLong ? "STC_TP2_Long"  : "STC_TP2_Short";
+            string n3     = isLong ? "STC_TP3_Long"  : "STC_TP3_Short";
 
-            // Capturar estado del trailing ANTES de que Prioridad 3/4 lo activen.
-            // Si activamos trailing en este bar, NO checkeamos salida en el mismo bar
-            // (el stop ya queda puesto como orden real para el siguiente bar).
-            bool trailingYaActivo = _trailingActive;
-            bool tp1EsteBar      = false;   // evita SetStopLoss en el mismo bar que ExitLong/Short parcial
-
-            // Prioridad 1: cruce opuesto de la nube → salida inmediata
+            // Salida por cruce opuesto
             if (isLong  && _cloud.HasCrossDownSignal) { CerrarPosicion("CloudCruce_Opuesto"); return; }
             if (!isLong && _cloud.HasCrossUpSignal)   { CerrarPosicion("CloudCruce_Opuesto"); return; }
 
-            // Prioridad 2: stop loss
-            if (isLong  && Low[0]  <= _activeStopPrice) { CerrarPosicion("StopLoss"); return; }
-            if (!isLong && High[0] >= _activeStopPrice) { CerrarPosicion("StopLoss"); return; }
-
-            // Prioridad 3: Breakeven automático tras X puntos de ganancia
+            // Breakeven: BreakEvenPoints=0 → activar en TP1; >0 → activar a X puntos de ganancia.
+            // En modo TP1: n1 ya cierra ese bar, solo se mueve el stop de n2.
+            // En modo puntos: n1 y n2 pueden estar aún abiertos, se mueven ambos.
             if (UseBreakEven && !_breakEvenTriggered)
             {
-                bool beAlcanzado = isLong
-                    ? High[0] >= _activeEntryPrice + BreakEvenPoints
-                    : Low[0]  <= _activeEntryPrice - BreakEvenPoints;
+                bool beAlcanzado = BreakEvenPoints <= 0
+                    ? (isLong ? High[0] >= _activeTarget1      : Low[0] <= _activeTarget1)
+                    : (isLong ? High[0] >= _activeEntryPrice + BreakEvenPoints
+                              : Low[0]  <= _activeEntryPrice - BreakEvenPoints);
 
                 if (beAlcanzado)
                 {
                     _breakEvenTriggered = true;
                     double bePrice = _activeEntryPrice
                         + (isLong ? 1 : -1) * BreakEvenLockTicks * TickSize;
+                    bePrice = Math.Round(bePrice / TickSize) * TickSize;
 
                     bool mejora = isLong ? bePrice > _activeStopPrice
                                         : bePrice < _activeStopPrice;
                     if (mejora)
                     {
-                        _activeStopPrice = bePrice;   // SetStopLoss se llama al final del método
-                        Print($"[STCFollower] BE activado +{BreakEvenPoints}pts — stop→{_activeStopPrice:F2}");
+                        _activeStopPrice = bePrice;
+                        if (BreakEvenPoints > 0)
+                            SetStopLoss(n1, CalculationMode.Price, bePrice, false);
+                        SetStopLoss(n2, CalculationMode.Price, bePrice, false);
+                        SetStopLoss(n3, CalculationMode.Price, bePrice, false);
+                        string modo = BreakEvenPoints <= 0 ? "TP1" : $"{BreakEvenPoints}pts";
+                        Print($"[STCFollower] BE activado ({modo}) — stop→{bePrice:F2}");
                     }
-
-                    if (TrailAfterBreakEven && !_trailingActive)
-                    {
-                        _trailingActive    = true;
-                        _trailingStopPrice = _activeStopPrice;
-                    }
                 }
-            }
-
-            // Prioridad 4: TP1 parcial (50%) → mover stop a breakeven (si BE no lo hizo antes)
-            if (!_tp1Hit)
-            {
-                bool tp1Alcanzado = isLong ? High[0] >= _activeTarget1 : Low[0] <= _activeTarget1;
-                if (tp1Alcanzado)
-                {
-                    _tp1Hit = true;
-                    if (_activeRecord != null) _activeRecord.Tp1Hit = true;
-
-                    // Si TP2 también se alcanza en la misma barra → cerrar todo directamente.
-                    // Dos ExitLong en el mismo bar causan "Unable to change order" en NT8.
-                    bool tp2EnMismaBarra = isLong ? High[0] >= _activeTarget2 : Low[0] <= _activeTarget2;
-                    if (tp2EnMismaBarra)
-                    {
-                        if (_activeRecord != null) _activeRecord.Tp2Hit = true;
-                        CerrarPosicion("TP1_TP2_MismaBarra");
-                        return;
-                    }
-
-                    tp1EsteBar        = true;
-                    _pendingTP2Bracket = true;   // SetProfitTarget(TP2) se pondrá la barra siguiente
-                    int mitad  = Math.Max(1, Position.Quantity / 2);
-                    if (isLong) ExitLong (mitad, "STC_TP1", entryName);
-                    else        ExitShort(mitad, "STC_TP1", entryName);
-
-                    // Solo mover stop a entry si BE no lo puso ya más cerca
-                    bool beYaMejorStop = isLong
-                        ? _activeStopPrice >= _activeEntryPrice
-                        : _activeStopPrice <= _activeEntryPrice;
-                    if (!beYaMejorStop)
-                        _activeStopPrice = _activeEntryPrice;
-
-                    if (TrailAfterTP1)
-                    {
-                        _trailingActive    = true;
-                        _trailingStopPrice = _activeStopPrice;
-                    }
-
-                    Print($"[STCFollower] TP1 alcanzado — stop→{_activeStopPrice:F2}");
-                }
-            }
-
-            // Prioridad 4.5: Ratchet escalonado — solo activo tras TP1 para el 50% restante
-            AplicarRatchet(isLong);
-
-            // Prioridad 5: trailing stop (activo tras TP1 o BE)
-            if (_trailingActive)
-            {
-                double nuevoTrail;
-                if (UseFixedTrail)
-                {
-                    nuevoTrail = isLong
-                        ? Close[0] - TrailingPoints
-                        : Close[0] + TrailingPoints;
-                }
-                else
-                {
-                    nuevoTrail = _riskManager.CalculateTrailingStop(Close[0], _activeDirection, ATR(14)[0]);
-                }
-
-                if (isLong  && nuevoTrail > _trailingStopPrice) _trailingStopPrice = nuevoTrail;
-                if (!isLong && nuevoTrail < _trailingStopPrice) _trailingStopPrice = nuevoTrail;
-
-                // Solo mejorar: no sobreescribir un stop más protector ya asegurado por ratchet
-                if (isLong  && _trailingStopPrice > _activeStopPrice) _activeStopPrice = _trailingStopPrice;
-                if (!isLong && _trailingStopPrice < _activeStopPrice) _activeStopPrice = _trailingStopPrice;
-
-                // Solo chequear salida si el trailing ya estaba activo desde una barra anterior
-                if (trailingYaActivo)
-                {
-                    if (isLong  && Low[0]  <= _trailingStopPrice) { CerrarPosicion("TrailingStop"); return; }
-                    if (!isLong && High[0] >= _trailingStopPrice) { CerrarPosicion("TrailingStop"); return; }
-                }
-            }
-
-            // Prioridad 6: TP2 final → cerrar posición restante
-            bool tp2Alcanzado = isLong ? High[0] >= _activeTarget2 : Low[0] <= _activeTarget2;
-            if (tp2Alcanzado)
-            {
-                if (_activeRecord != null) _activeRecord.Tp2Hit = true;
-                CerrarPosicion("TP2_Final");
-                return;
-            }
-
-            // Bracket TP2: se pone en la barra siguiente a TP1 para evitar conflicto con ExitLong parcial
-            if (_pendingTP2Bracket && !tp1EsteBar)
-            {
-                _pendingTP2Bracket = false;
-                SetProfitTarget(entryName, CalculationMode.Price, _activeTarget2);
-            }
-
-            // UNA sola llamada a SetStopLoss por bar — evita "Unable to change order".
-            // Excepción: no modificar el bracket en el mismo bar que se ejecuta TP1 parcial.
-            if (!tp1EsteBar)
-            {
-                // Alinear al tick y validar dirección antes de enviar al broker.
-                // APEX rechaza con "InvalidPrice" si el stop queda del lado incorrecto del mercado.
-                double stopAlineado = Math.Round(_activeStopPrice / TickSize) * TickSize;
-                bool stopValido = isLong
-                    ? stopAlineado < Close[0]   // LONG: stop debe ser menor al precio actual
-                    : stopAlineado > Close[0];  // SHORT: stop debe ser mayor al precio actual
-                if (stopValido)
-                    SetStopLoss(entryName, CalculationMode.Price, stopAlineado, false);
             }
         }
 
-        // ─── Cerrar posición ──────────────────────────────────────────────────
+        // ─── Cerrar toda la posición (señal opuesta u otras salidas manuales) ─
         private void CerrarPosicion(string razon)
         {
-            bool   isLong    = _activeDirection == "LONG";
-            string entryName = isLong ? "STC_Long" : "STC_Short";
+            bool isLong = _activeDirection == "LONG";
 
-            if (isLong) ExitLong ("STC_Salida_" + razon, entryName);
-            else        ExitShort("STC_Salida_" + razon, entryName);
+            // ExitLong/Short con fromEntrySignal vacío = cerrar TODOS los slots
+            if (isLong) ExitLong (Position.Quantity, "STC_Salida_" + razon, "");
+            else        ExitShort(Position.Quantity, "STC_Salida_" + razon, "");
 
             FinalizarPosicion(razon);
         }
@@ -567,13 +507,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             bool   isLong  = _activeDirection == "LONG";
             double tickVal = Instrument.MasterInstrument.PointValue * TickSize;
 
-            // Usar el precio real del fill de salida; si no se capturó, usar Close[0]
             double exitPrice = _lastExitPrice > 0 ? _lastExitPrice : Close[0];
-            double pnlTicks = isLong
+            double pnlTicks  = isLong
                 ? (exitPrice - _activeEntryPrice) / TickSize
                 : (_activeEntryPrice - exitPrice) / TickSize;
             double pnlUsd = pnlTicks * tickVal * (_activeRecord?.Contracts ?? 1);
-            _lastExitPrice = 0; // resetear para el próximo trade
+            _lastExitPrice = 0;
 
             _riskManager.RegisterTradeResult(pnlUsd);
 
@@ -589,8 +528,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             RemoveDrawObject("STC_TP1");
             RemoveDrawObject("STC_TP2");
+            RemoveDrawObject("STC_TP3");
             RemoveDrawObject("STC_TP1_lbl");
             RemoveDrawObject("STC_TP2_lbl");
+            RemoveDrawObject("STC_TP3_lbl");
 
             Draw.Text(this, $"X_{CurrentBar}", $"[{razon}]", 0,
                 isLong ? High[0] + TickSize * 6 : Low[0] - TickSize * 6,
@@ -598,14 +539,11 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             Print($"[STCFollower] SALIDA {razon} | PnL={pnlTicks:F1}t (${pnlUsd:F2})");
 
-            _positionOpen      = false;
-            _entrySubmitted    = false;
-            _activeRecord      = null;
-            _trailingActive    = false;
-            _trailingStopPrice = 0;
-            _ratchetRiskPoints  = 0;
-            _ratchetLevel       = 0;
-            _pendingTP2Bracket  = false;
+            _positionOpen       = false;
+            _entrySubmitted     = false;
+            _activeRecord       = null;
+            _activeDirection    = "";
+            _breakEvenTriggered = false;
         }
 
         // ─── Callbacks de órdenes ─────────────────────────────────────────────
@@ -619,18 +557,21 @@ namespace NinjaTrader.NinjaScript.Strategies
                  execution.Order.OrderState != OrderState.PartFilled)) return;
 
             string name = execution.Order.Name ?? "";
-            if (name == "STC_Long" || name == "STC_Short")
+            if (name == "STC_TP1_Long" || name == "STC_TP1_Short" ||
+                name == "STC_TP2_Long" || name == "STC_TP2_Short" ||
+                name == "STC_TP3_Long" || name == "STC_TP3_Short")
             {
-                _positionOpen      = true;
-                _entrySubmitted    = true;
-                _activeEntryPrice  = price;
-                _ratchetRiskPoints = Math.Abs(price - _activeStopPrice);   // recalcular con fill real
+                // Solo registrar el trade al confirmar fill del broker
+                if (!_positionOpen)
+                    _riskManager.RegisterTrade(_activeSetupType ?? "CloudPullback");
+
+                _positionOpen     = true;
+                _entrySubmitted   = true;
+                _activeEntryPrice = price;
                 if (_activeRecord != null) _activeRecord.EntryPrice = price;
             }
             else
             {
-                // Cualquier fill de salida (stop, TP1, TP2, salidas manuales):
-                // guardar el precio real para usarlo en el cálculo de P&L.
                 _lastExitPrice = price;
             }
         }
@@ -643,7 +584,9 @@ namespace NinjaTrader.NinjaScript.Strategies
         {
             if (order == null) return;
             string name = order.Name ?? "";
-            if (name != "STC_Long" && name != "STC_Short") return;
+            if (name != "STC_TP1_Long" && name != "STC_TP1_Short" &&
+                name != "STC_TP2_Long" && name != "STC_TP2_Short" &&
+                name != "STC_TP3_Long" && name != "STC_TP3_Short") return;
 
             if (orderState == OrderState.Rejected || orderState == OrderState.Cancelled)
             {
@@ -653,42 +596,75 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
-        // ─── Ratchet stop escalonado ──────────────────────────────────────
-        // Solo activo tras TP1. Cuando el precio alcanza (N+0.5)×R, asegura N×R.
-        // Ejemplo con stop=10pts (1R): 2.5R→lock2R, 3.5R→lock3R, 4.5R→lock4R.
-        private void AplicarRatchet(bool isLong)
+        // ─── Tablero de condiciones ───────────────────────────────────────────
+        private void DibujarTablero()
         {
-            if (!UseRatchetStop || !_tp1Hit || _ratchetRiskPoints <= 0) return;
+            const string V  = "✓";
+            const string X  = "✗";
+            const string NA = "—";
 
-            double ganancia = isLong
-                ? High[0]  - _activeEntryPrice
-                : _activeEntryPrice - Low[0];
+            // Señal detectada esta barra
+            string senal = "Sin señal";
+            if      (EnterOnTipo2 && _cloud.TouchedCloudFromAbove) senal = "CloudPullback  LONG  ↑";
+            else if (EnterOnTipo2 && _cloud.TouchedCloudFromBelow) senal = "CloudPullback  SHORT ↓";
+            else if (EnterOnTipo1 && _cloud.HasCrossUpSignal)      senal = "TrendStart     LONG  ↑";
+            else if (EnterOnTipo1 && _cloud.HasCrossDownSignal)    senal = "TrendStart     SHORT ↓";
 
-            // N = floor(ganancia/riesgo - 0.5): el nivel a asegurar
-            int nuevoNivel = (int)Math.Floor(ganancia / _ratchetRiskPoints - 0.5 + 1e-9);
+            // Horario
+            bool   timeOk  = !UseTimeFilter || EsHorarioCalidad();
+            string timeStr = UseTimeFilter
+                ? $"{(timeOk ? V : X)}  {Time[0]:HH:mm}  ({HoraInicio/100:D2}:{HoraInicio%100:D2}–{HoraFin/100:D2}:{HoraFin%100:D2})"
+                : $"{NA}  desactivado";
 
-            // Mínimo 2R (TP1 ya estaba en 2R; no retrocedemos por debajo del BE)
-            if (nuevoNivel <= _ratchetLevel || nuevoNivel < 2) return;
+            // ADX
+            double adxVal = _adx[0];
+            bool   adxOk  = !UseADXFilter || adxVal >= ADXMinTrend;
+            string adxStr = UseADXFilter
+                ? $"{(adxOk ? V : X)}  {adxVal:F1}  (mín {ADXMinTrend})"
+                : $"{NA}  desactivado";
 
-            _ratchetLevel = nuevoNivel;
-            double lockPrice = isLong
-                ? _activeEntryPrice + _ratchetLevel * _ratchetRiskPoints
-                : _activeEntryPrice - _ratchetLevel * _ratchetRiskPoints;
+            // Cooldown
+            int    barsDesdeLast = CurrentBar - _lastSetupBar;
+            bool   coolOk        = SetupCooldownBars == 0 || barsDesdeLast >= SetupCooldownBars;
+            string coolStr       = SetupCooldownBars > 0
+                ? $"{(coolOk ? V : X)}  {barsDesdeLast} barras  (mín {SetupCooldownBars})"
+                : $"{NA}  desactivado";
 
-            bool mejora = isLong ? lockPrice > _activeStopPrice : lockPrice < _activeStopPrice;
-            if (mejora)
-            {
-                _activeStopPrice = lockPrice;
-                Print($"[STCFollower] Ratchet {_ratchetLevel}R asegurado — stop→{_activeStopPrice:F2}");
-            }
+            // Riesgo diario
+            bool   riskOk  = _riskManager.CanTrade();
+            string riskStr = $"{(riskOk ? V : X)}  trades={_riskManager.DailyTrades}/{MaxDailyTrades}  " +
+                             $"pérd={_riskManager.ConsecutiveLosses}/{MaxConsecLosses}  " +
+                             $"P&L=${_riskManager.DailyPnL:F0}";
+
+            // Posición
+            string posStr = _positionOpen
+                ? $"{_activeDirection}  {Position.Quantity}c  entry={_activeEntryPrice:F2}"
+                : "FLAT";
+
+            string txt =
+                "── STCFollower ──────────────────────────\n" +
+                $" Señal   : {senal}\n"                       +
+                "─────────────────────────────────────────\n" +
+                $" Horario : {timeStr}\n"                     +
+                $" ADX     : {adxStr}\n"                      +
+                $" Cooldown: {coolStr}\n"                     +
+                $" Riesgo  : {riskStr}\n"                     +
+                "─────────────────────────────────────────\n" +
+                $" Posición: {posStr}\n";
+
+            Draw.TextFixed(this, "STC_Dashboard", txt, DashboardPosition,
+                Brushes.White,
+                new NinjaTrader.Gui.Tools.SimpleFont("Courier New", 10),
+                Brushes.Transparent, Brushes.Black, 80);
         }
 
         // ─── Helper horario ───────────────────────────────────────────────────
+        private TimeSpan HHMM(int hhmm) => new TimeSpan(hhmm / 100, hhmm % 100, 0);
+
         private bool EsHorarioCalidad()
         {
             var h = Time[0].TimeOfDay;
-            return (h >= new TimeSpan(10, 0, 0) && h <= new TimeSpan(11, 30, 0)) ||
-                   (h >= new TimeSpan(14, 0, 0) && h <= new TimeSpan(15, 30, 0));
+            return h >= HHMM(HoraInicio) && h <= HHMM(HoraFin);
         }
 
         // ─── Parámetros editables ─────────────────────────────────────────────
@@ -752,53 +728,49 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Ratio TP2 (múltiplo de riesgo)", Order = 9, GroupName = "3. Riesgo")]
         public double TP2Ratio { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Trailing stop activo tras TP1", Order = 10, GroupName = "3. Riesgo")]
-        public bool TrailAfterTP1 { get; set; }
+        [NinjaScriptProperty, Range(1.0, 20.0)]
+        [Display(Name = "Ratio TP3 (múltiplo de riesgo)", Order = 10, GroupName = "3. Riesgo")]
+        public double TP3Ratio { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Ratchet stop tras TP1 (2.5R→lock2R, 3.5R→lock3R…)", Order = 11, GroupName = "3. Riesgo",
-                 Description = "Tras TP1, asegura N×R cuando el precio alcanza (N+0.5)×R. Coexiste con trailing.")]
-        public bool UseRatchetStop { get; set; }
+        [Display(Name = "Usar contratos fijos (ignorar % riesgo)", Order = 11, GroupName = "3. Riesgo")]
+        public bool UseFixedContracts { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Trailing activo tras Breakeven", Order = 12, GroupName = "3. Riesgo",
-                 Description = "Activa trailing stop automáticamente cuando se alcanza el breakeven.")]
-        public bool TrailAfterBreakEven { get; set; }
+        [Range(1, 20)]
+        [Display(Name = "Contratos fijos por entrada (obsoleto)", Order = 12, GroupName = "3. Riesgo")]
+        public int FixedContracts { get; set; }
 
-        [NinjaScriptProperty]
-        [Display(Name = "Usar trailing por puntos fijos (no ATR)", Order = 13, GroupName = "3. Riesgo",
-                 Description = "Si activado: trailing fijo en puntos. Si desactivado: trailing por ATR × multiplicador.")]
-        public bool UseFixedTrail { get; set; }
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Contratos en TP1", Order = 13, GroupName = "3. Riesgo",
+                 Description = "Contratos que salen en el primer objetivo. Solo aplica con 'Usar contratos fijos' activo.")]
+        public int ContratoTP1 { get; set; }
 
-        [NinjaScriptProperty, Range(1.0, 500.0)]
-        [Display(Name = "Trailing fijo (puntos)", Order = 14, GroupName = "3. Riesgo",
-                 Description = "Distancia en puntos del trailing fijo. Sólo aplica si 'Trailing por puntos fijos' está activado.")]
-        public double TrailingPoints { get; set; }
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Contratos en TP2", Order = 14, GroupName = "3. Riesgo",
+                 Description = "Contratos que salen en el segundo objetivo.")]
+        public int ContratoTP2 { get; set; }
 
-        [NinjaScriptProperty, Range(0.1, 10.0)]
-        [Display(Name = "Multiplicador ATR para trailing", Order = 15, GroupName = "3. Riesgo",
-                 Description = "Distancia del trailing = ATR(14) × este valor. Sólo aplica si el trailing es por ATR.")]
-        public double TrailingATRMultiplier { get; set; }
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Contratos en TP3", Order = 15, GroupName = "3. Riesgo",
+                 Description = "Contratos que salen en el tercer objetivo.")]
+        public int ContratoTP3 { get; set; }
 
         // 4. Breakeven
         [NinjaScriptProperty]
         [Display(Name = "Activar breakeven automático", Order = 1, GroupName = "4. Breakeven")]
         public bool UseBreakEven { get; set; }
 
-        [NinjaScriptProperty, Range(1.0, 500.0)]
-        [Display(Name = "Puntos de ganancia para activar BE",
-                 Description = "Cuando el precio avanza este número de puntos desde la entrada, el stop se mueve a BE",
-                 Order = 2, GroupName = "4. Breakeven")]
+        [NinjaScriptProperty, Range(0.0, 500.0)]
+        [Display(Name = "Puntos para activar BE (0 = en TP1)", Order = 2, GroupName = "4. Breakeven",
+                 Description = "0 = mover stop a BE cuando el precio alcanza TP1. Cualquier valor positivo = activar a esos puntos de ganancia desde la entrada.")]
         public double BreakEvenPoints { get; set; }
 
         [NinjaScriptProperty, Range(0, 50)]
-        [Display(Name = "Ticks de lock-in en BE (0 = entrada exacta)",
-                 Description = "Ticks adicionales sobre la entrada al mover el stop. 0 = breakeven puro.",
-                 Order = 3, GroupName = "4. Breakeven")]
+        [Display(Name = "Ticks de lock-in en BE (0 = entrada exacta)", Order = 3, GroupName = "4. Breakeven",
+                 Description = "Ticks adicionales sobre la entrada al mover el stop. 0 = breakeven puro.")]
         public int BreakEvenLockTicks { get; set; }
 
-        // 5. Límites diarios (antes grupo 4)
+        // 5. Límites diarios
         [NinjaScriptProperty, Range(0.001, 0.20)]
         [Display(Name = "Pérdida diaria máxima (%)", Order = 1, GroupName = "5. Límites diarios",
                  Description = "Detiene el trading cuando la pérdida del día supera este % del capital. Ej: 0.05 = 5%")]
@@ -814,18 +786,54 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         // 6. Sesión
         [NinjaScriptProperty]
-        [Display(Name = "Filtro horario de calidad (10:00–11:30 / 14:00–15:30 ET)",
+        [Display(Name = "Filtro horario — solo operar en ventana definida",
                  Order = 1, GroupName = "6. Sesión")]
         public bool UseTimeFilter { get; set; }
 
+        [NinjaScriptProperty, Range(0, 2359)]
+        [Display(Name = "Hora inicio (HHMM, ej: 1000 = 10:00)",
+                 Order = 2, GroupName = "6. Sesión",
+                 Description = "Inicio de la ventana horaria permitida. Formato HHMM.")]
+        public int HoraInicio { get; set; }
+
+        [NinjaScriptProperty, Range(0, 2359)]
+        [Display(Name = "Hora fin (HHMM, ej: 1530 = 15:30)",
+                 Order = 3, GroupName = "6. Sesión",
+                 Description = "Fin de la ventana horaria permitida. Formato HHMM.")]
+        public int HoraFin { get; set; }
+
         [NinjaScriptProperty, Range(0, 20)]
         [Display(Name = "Cooldown barras tras señal (0 = desactivado)",
-                 Order = 2, GroupName = "6. Sesión")]
+                 Order = 4, GroupName = "6. Sesión")]
         public int SetupCooldownBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Filtro ADX — evitar zonas de indecisión",
+                 Order = 5, GroupName = "6. Sesión",
+                 Description = "Si está activo, solo opera cuando el ADX supera el mínimo configurado.")]
+        public bool UseADXFilter { get; set; }
+
+        [NinjaScriptProperty, Range(2, 100)]
+        [Display(Name = "ADX — período de cálculo",
+                 Order = 6, GroupName = "6. Sesión")]
+        public int ADXPeriod { get; set; }
+
+        [NinjaScriptProperty, Range(5, 60)]
+        [Display(Name = "ADX — valor mínimo para operar",
+                 Order = 7, GroupName = "6. Sesión",
+                 Description = "ADX < este valor = mercado sin tendencia definida. Recomendado: 20–25.")]
+        public int ADXMinTrend { get; set; }
 
         // 7. Visualización
         [NinjaScriptProperty]
         [Display(Name = "Mostrar nube en chart", Order = 1, GroupName = "7. Visualización")]
         public bool ShowCloudInStrategy { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Mostrar tablero de condiciones", Order = 2, GroupName = "7. Visualización")]
+        public bool ShowDashboard { get; set; }
+
+        [Display(Name = "Posición del tablero", Order = 3, GroupName = "7. Visualización")]
+        public TextPosition DashboardPosition { get; set; }
     }
 }

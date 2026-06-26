@@ -33,6 +33,8 @@ using NinjaTrader.NinjaScript.DrawingTools;
 
 namespace NinjaTrader.NinjaScript.Strategies
 {
+    public enum STADireccionPermitida { Ambas, SoloLong, SoloShort }
+
     public class SmoothTrendAI : Strategy
     {
         // ─── Índices de series de datos ────────────────────────────────────
@@ -122,14 +124,24 @@ namespace NinjaTrader.NinjaScript.Strategies
                 StopATRMultiplier   = 1.3;
                 MinStopTicks        = 6;
                 TrailAfterTP1       = true;
+                PorcentajeTP1       = 50;
+                TP1RatioTrendStart      = 1.5;
+                TP2RatioTrendStart      = 3.0;
+                TP1RatioCloudPullback   = 2.0;
+                TP2RatioCloudPullback   = 4.0;
 
                 // Sesión
                 RestrictToRTH             = false;
                 RequireVolumeConfirmation = true;
                 UseVWAPFilter             = true;
                 UseQualityTimeFilter      = false;
+                HoraInicio                = 1000;   // 10:00
+                HoraFin                   = 1530;   // 15:30
+                DireccionPermitida        = STADireccionPermitida.Ambas;
                 LogRejectedSignals        = true;
                 SetupCooldownBars         = 5;
+                MaxDailyTrades            = 5;
+                MaxConsecLosses           = 3;
 
                 // Visualización adicional
                 ShowCloudInStrategy    = true;
@@ -170,14 +182,23 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Gestor de riesgo
                 _riskManager = new STARiskManager
                 {
-                    AccountCapital       = AccountCapital,
-                    RiskPctPerTrade      = RiskPctPerTrade,
-                    MaxContracts         = MaxContracts,
-                    StopCloudMultiplier  = StopCloudMultiplier,
-                    StopBufferTicks      = StopBufferTicks,
-                    StopATRMultiplier    = StopATRMultiplier,
-                    MinStopTicks         = MinStopTicks,
-                    TrailAfterTP1        = TrailAfterTP1
+                    AccountCapital         = AccountCapital,
+                    RiskPctPerTrade        = RiskPctPerTrade,
+                    MaxContracts           = MaxContracts,
+                    StopCloudMultiplier    = StopCloudMultiplier,
+                    StopBufferTicks        = StopBufferTicks,
+                    StopATRMultiplier      = StopATRMultiplier,
+                    MinStopTicks           = MinStopTicks,
+                    TrailAfterTP1          = TrailAfterTP1,
+                    MaxDailyProfitPct      = 1.0,   // sin límite de ganancia diaria
+                    MaxDailyTrades         = MaxDailyTrades,
+                    MaxTrendStartPerDay    = MaxDailyTrades,
+                    MaxCloudPullbackPerDay = MaxDailyTrades,
+                    MaxConsecutiveLosses   = MaxConsecLosses,
+                    TrendStart_TP1Mult     = TP1RatioTrendStart,
+                    TrendStart_TP2Mult     = TP2RatioTrendStart,
+                    CloudPullback_TP1Mult  = TP1RatioCloudPullback,
+                    CloudPullback_TP2Mult  = TP2RatioCloudPullback
                 };
 
                 // Journal
@@ -233,6 +254,12 @@ namespace NinjaTrader.NinjaScript.Strategies
 
                 _journal.Open(Instrument.FullName);
                 _journal.OpenRejectedLog();
+            }
+            else if (State == State.Realtime)
+            {
+                _riskManager.ResetDaily();
+                _lastDailyReset = DateTime.Today;
+                Print("[STA] LIVE: contadores reiniciados al entrar en tiempo real");
             }
             else if (State == State.Terminated)
             {
@@ -366,6 +393,10 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // Verificar límite específico del tipo de setup
             if (!_riskManager.CanTrade(setup.SetupType)) return;
+
+            // ── Filtro de dirección permitida ─────────────────────────────
+            if (DireccionPermitida == STADireccionPermitida.SoloLong  && setup.Direction == "SHORT") { LogRechazo(setup, "DireccionFiltro", 0, "Solo LONG permitido",  0); return; }
+            if (DireccionPermitida == STADireccionPermitida.SoloShort && setup.Direction == "LONG")  { LogRechazo(setup, "DireccionFiltro", 0, "Solo SHORT permitido", 0); return; }
 
             // ── Filtro RSI: no entrar en zona extrema opuesta ─────────────
             double rsiM15 = ObtenerRsiM15();
@@ -583,8 +614,6 @@ namespace NinjaTrader.NinjaScript.Strategies
             _trailingActive    = false;
             _trailingStopPrice = 0;
 
-            _riskManager.RegisterTrade(setup.SetupType);
-
             // ── Preparar registro de journal ───────────────────────────────
             _activeRecord = new STATradeRecord
             {
@@ -702,7 +731,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 if (tp1)
                 {
                     _tp1Hit = true;
-                    int mitad = Math.Max(1, Position.Quantity / 2);
+                    int mitad = Math.Max(1, (int)Math.Round(Position.Quantity * PorcentajeTP1 / 100.0));
                     int mainExitQty = Math.Min(mitad, Math.Max(0, _mainEntryContracts));
                     int scaleExitQty = mitad - mainExitQty;
 
@@ -846,6 +875,10 @@ namespace NinjaTrader.NinjaScript.Strategies
             string name = execution.Order.Name ?? "";
             if (name == "STA_Long" || name == "STA_Short")
             {
+                // Solo registrar en risk manager al confirmar fill del broker
+                if (!_positionOpen)
+                    _riskManager.RegisterTrade(_activeSetupType ?? "CloudPullback");
+
                 _positionOpen = true;
                 _entrySubmitted = true;
                 _activeEntryPrice = price;
@@ -904,12 +937,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             return h >= inicio && h <= fin;
         }
 
+        private TimeSpan HHMM(int hhmm) => new TimeSpan(hhmm / 100, hhmm % 100, 0);
+
         private bool EsHorarioCalidad()
         {
             var h = Time[0].TimeOfDay;
-            bool ventana1 = h >= new TimeSpan(10,  0, 0) && h <= new TimeSpan(11, 30, 0);
-            bool ventana2 = h >= new TimeSpan(14,  0, 0) && h <= new TimeSpan(15, 30, 0);
-            return ventana1 || ventana2;
+            return h >= HHMM(HoraInicio) && h <= HHMM(HoraFin);
         }
 
         private void ActualizarVWAP()
@@ -1013,7 +1046,37 @@ namespace NinjaTrader.NinjaScript.Strategies
         [Display(Name = "Trailing stop activo tras TP1", Order = 8, GroupName = "3. Riesgo")]
         public bool TrailAfterTP1 { get; set; }
 
+        [NinjaScriptProperty, Range(10, 90)]
+        [Display(Name = "% de posición que sale en TP1", Order = 9, GroupName = "3. Riesgo",
+                 Description = "Porcentaje de contratos que se cierran al alcanzar TP1. El resto sigue hasta TP2 o trailing. Ej: 50 = mitad sale en TP1.")]
+        public int PorcentajeTP1 { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 10.0)]
+        [Display(Name = "Ratio TP1 — TrendStart (cruce)", Order = 10, GroupName = "3. Riesgo",
+                 Description = "Múltiplo de riesgo para el primer objetivo en setups de cruce (Tipo 1). Ej: 1.5 = TP1 a 1.5× el riesgo.")]
+        public double TP1RatioTrendStart { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 20.0)]
+        [Display(Name = "Ratio TP2 — TrendStart (cruce)", Order = 11, GroupName = "3. Riesgo",
+                 Description = "Múltiplo de riesgo para el segundo objetivo en setups de cruce (Tipo 1).")]
+        public double TP2RatioTrendStart { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 10.0)]
+        [Display(Name = "Ratio TP1 — CloudPullback (toque de nube)", Order = 12, GroupName = "3. Riesgo",
+                 Description = "Múltiplo de riesgo para el primer objetivo en pullbacks a la nube (Tipo 2).")]
+        public double TP1RatioCloudPullback { get; set; }
+
+        [NinjaScriptProperty, Range(0.5, 20.0)]
+        [Display(Name = "Ratio TP2 — CloudPullback (toque de nube)", Order = 13, GroupName = "3. Riesgo",
+                 Description = "Múltiplo de riesgo para el segundo objetivo en pullbacks a la nube (Tipo 2).")]
+        public double TP2RatioCloudPullback { get; set; }
+
         // ── Sesión ────────────────────────────────────────────────────────
+        [NinjaScriptProperty]
+        [Display(Name = "Dirección permitida", Order = 0, GroupName = "4. Sesión",
+                 Description = "Ambas = LONG y SHORT. SoloLong = solo compras. SoloShort = solo ventas en corto.")]
+        public STADireccionPermitida DireccionPermitida { get; set; }
+
         [NinjaScriptProperty]
         [Display(Name = "Restringir a horario RTH (09:30–15:55 ET)", Order = 1, GroupName = "4. Sesión")]
         public bool RestrictToRTH { get; set; }
@@ -1027,17 +1090,37 @@ namespace NinjaTrader.NinjaScript.Strategies
         public bool UseVWAPFilter { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Filtro horario de calidad (10:00–11:30 y 14:00–15:30 ET)", Order = 4, GroupName = "4. Sesión")]
+        [Display(Name = "Filtro horario — solo operar en ventana definida", Order = 4, GroupName = "4. Sesión")]
         public bool UseQualityTimeFilter { get; set; }
 
+        [NinjaScriptProperty, Range(0, 2359)]
+        [Display(Name = "Hora inicio (HHMM, ej: 1000 = 10:00)", Order = 5, GroupName = "4. Sesión",
+                 Description = "Inicio de la ventana horaria permitida. Formato HHMM.")]
+        public int HoraInicio { get; set; }
+
+        [NinjaScriptProperty, Range(0, 2359)]
+        [Display(Name = "Hora fin (HHMM, ej: 1530 = 15:30)", Order = 6, GroupName = "4. Sesión",
+                 Description = "Fin de la ventana horaria permitida. Formato HHMM.")]
+        public int HoraFin { get; set; }
+
         [NinjaScriptProperty]
-        [Display(Name = "Registrar señales rechazadas en CSV", Order = 5, GroupName = "4. Sesión")]
+        [Display(Name = "Registrar señales rechazadas en CSV", Order = 7, GroupName = "4. Sesión")]
         public bool LogRejectedSignals { get; set; }
 
         [NinjaScriptProperty]
         [Range(0, 20)]
-        [Display(Name = "Cooldown barras tras setup (0=desactivado)", Order = 6, GroupName = "4. Sesión")]
+        [Display(Name = "Cooldown barras tras setup (0=desactivado)", Order = 8, GroupName = "4. Sesión")]
         public int SetupCooldownBars { get; set; }
+
+        [NinjaScriptProperty, Range(1, 50)]
+        [Display(Name = "Entradas máximas por día", Order = 9, GroupName = "4. Sesión",
+                 Description = "Detiene el trading al alcanzar este número de entradas en el día.")]
+        public int MaxDailyTrades { get; set; }
+
+        [NinjaScriptProperty, Range(1, 20)]
+        [Display(Name = "Pérdidas consecutivas máximas", Order = 10, GroupName = "4. Sesión",
+                 Description = "Detiene el trading al alcanzar N pérdidas seguidas.")]
+        public int MaxConsecLosses { get; set; }
 
         // ── Visualización adicional ───────────────────────────────────────
         [NinjaScriptProperty]
@@ -1094,7 +1177,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             // Horario
             bool   timeOk  = !UseQualityTimeFilter || EsHorarioCalidad();
             string timeStr = UseQualityTimeFilter
-                ? $"{(timeOk ? V : X)}  {Time[0]:HH:mm} ET  (10-11:30 / 14-15:30)"
+                ? $"{(timeOk ? V : X)}  {Time[0]:HH:mm}  ({HoraInicio/100:D2}:{HoraInicio%100:D2}–{HoraFin/100:D2}:{HoraFin%100:D2})"
                 : $"{NA}  desactivado";
 
             // VWAP
@@ -1132,9 +1215,14 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ? $"{_activeDirection}  {Position.Quantity}c  entry={_activeEntryPrice:F2}"
                 : "FLAT";
 
+            string dirStr = DireccionPermitida == STADireccionPermitida.Ambas    ? "LONG ✓  SHORT ✓"
+                         : DireccionPermitida == STADireccionPermitida.SoloLong  ? "LONG ✓  SHORT ✗"
+                         :                                                          "LONG ✗  SHORT ✓";
+
             string txt =
                 "── SmoothTrendAI ────────────────────────\n"  +
                 $" Señal   : {senal}\n"                         +
+                $" Dirección: {dirStr}\n"                       +
                 "─────────────────────────────────────────\n"  +
                 $" Volumen : {volStr}\n"                        +
                 $" RSI     : {rsiStr}\n"                        +
