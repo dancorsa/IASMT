@@ -128,30 +128,33 @@ namespace NinjaTrader.NinjaScript.Strategies
                 MaxWeeklyTrades  = 30;
                 MaxWeeklyLossPct = 0.05;
 
+                // Sesión
+                UseTimeFilter     = true;
+                HoraInicio        = 930;    // 9:30 — apertura RTH
+                HoraFin           = 1530;   // 15:30
+
+                // ADX: filtro de mercado lateral/neutral
+                UseADXFilter      = true;
+                ADXPeriod         = 14;
+                ADXMinTrend       = 20;     // < 20 = rango/lateral → no operar
+
+                // Cooldown: evitar doble entrada en el mismo pullback
+                SetupCooldownBars = 3;
+
                 // Entrada y calidad
                 UseLimitEntry        = false;
                 LimitOffsetTicks     = 2;
-                // Con TP1Ratio=1.0 el R:R al TP1 siempre es ~1.0 → MinRR=1.5 bloquearía todo
-                UseMinRR             = false;
+                UseMinRR             = false; // Con TP1Ratio=1.0 el R:R al TP1 siempre es 1.0 → no filtrar
                 MinRR                = 1.0;
                 UseTimeExit          = true;
-                MaxBarsInTrade       = 15;  // Range100: ritmo variable, 15 barras limita exposición
+                MaxBarsInTrade       = 15;
                 UseSRFilter          = true;
                 SRDistanceTicks      = 10;
-                UseBarRateFilter     = true;   // Activar: Range100 en mercado muerto = señales falsas
-                MinBarsPerHour       = 5;      // < 5 barras/hora = sin liquidez
-                MaxBarsPerHour       = 120;    // > 120 barras/hora = noticias/caos
+                UseBarRateFilter     = true;
+                MinBarsPerHour       = 5;
+                MaxBarsPerHour       = 120;
                 UseAdaptiveSizing    = false;
                 AdaptiveSizingThreshold = 40;
-
-                // Sesión
-                UseTimeFilter     = true;    // Solo operar en horario de calidad
-                HoraInicio        = 930;     // 9:30 — apertura RTH
-                HoraFin           = 1530;    // 15:30 — evitar último cierre caótico
-                SetupCooldownBars = 2;       // 3→2: en Range100 señales válidas pueden ser consecutivas
-                UseADXFilter      = true;
-                ADXPeriod         = 14;
-                ADXMinTrend       = 15;      // 20→15: Range100 tiene H-L constante → ADX estructuralmente más bajo
 
                 // Visualización
                 ShowCloudInStrategy = true;
