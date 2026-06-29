@@ -136,7 +136,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // ADX: filtro de mercado lateral/neutral
                 UseADXFilter      = true;
                 ADXPeriod         = 14;
-                ADXMinTrend       = 20;     // < 20 = rango/lateral → no operar
+                ADXMinTrend       = 15;     // MNQ Range100: H-L constante aplana ADX → umbral 15
 
                 // Cooldown: evitar doble entrada en el mismo pullback
                 SetupCooldownBars = 3;
@@ -149,9 +149,9 @@ namespace NinjaTrader.NinjaScript.Strategies
                 UseTimeExit          = true;
                 MaxBarsInTrade       = 15;
                 UseSRFilter          = true;
-                SRDistanceTicks      = 10;
+                SRDistanceTicks      = 20;  // MNQ: 10t=2.5pts sin efecto real, 20t=5pts significativo
                 UseBarRateFilter     = true;
-                MinBarsPerHour       = 5;
+                MinBarsPerHour       = 10;  // MNQ RTH raramente baja de 15 bar/h; 10 filtra iliquidez real
                 MaxBarsPerHour       = 120;
                 UseAdaptiveSizing    = false;
                 AdaptiveSizingThreshold = 40;
