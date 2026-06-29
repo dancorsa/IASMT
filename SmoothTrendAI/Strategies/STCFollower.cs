@@ -131,26 +131,27 @@ namespace NinjaTrader.NinjaScript.Strategies
                 // Entrada y calidad
                 UseLimitEntry        = false;
                 LimitOffsetTicks     = 2;
-                UseMinRR             = true;
-                MinRR                = 1.5;
+                // Con TP1Ratio=1.0 el R:R al TP1 siempre es ~1.0 → MinRR=1.5 bloquearía todo
+                UseMinRR             = false;
+                MinRR                = 1.0;
                 UseTimeExit          = true;
-                MaxBarsInTrade       = 20;
+                MaxBarsInTrade       = 15;  // Range100: ritmo variable, 15 barras limita exposición
                 UseSRFilter          = true;
                 SRDistanceTicks      = 10;
-                UseBarRateFilter     = false;
-                MinBarsPerHour       = 3;
-                MaxBarsPerHour       = 60;
+                UseBarRateFilter     = true;   // Activar: Range100 en mercado muerto = señales falsas
+                MinBarsPerHour       = 5;      // < 5 barras/hora = sin liquidez
+                MaxBarsPerHour       = 120;    // > 120 barras/hora = noticias/caos
                 UseAdaptiveSizing    = false;
                 AdaptiveSizingThreshold = 40;
 
                 // Sesión
-                UseTimeFilter     = false;
-                HoraInicio        = 1000;   // 10:00
-                HoraFin           = 1530;   // 15:30
-                SetupCooldownBars = 3;
+                UseTimeFilter     = true;    // Solo operar en horario de calidad
+                HoraInicio        = 930;     // 9:30 — apertura RTH
+                HoraFin           = 1530;    // 15:30 — evitar último cierre caótico
+                SetupCooldownBars = 2;       // 3→2: en Range100 señales válidas pueden ser consecutivas
                 UseADXFilter      = true;
                 ADXPeriod         = 14;
-                ADXMinTrend       = 20;
+                ADXMinTrend       = 15;      // 20→15: Range100 tiene H-L constante → ADX estructuralmente más bajo
 
                 // Visualización
                 ShowCloudInStrategy = true;
