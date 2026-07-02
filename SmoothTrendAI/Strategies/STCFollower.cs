@@ -282,6 +282,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 return;
             }
 
+            // Guardia: la orden de salida se submite antes de que el broker confirme
+            // el cierre. Mientras Position no sea Flat, no evaluar nuevas señales para
+            // evitar una entrada sin brackets (stop/target) por el solapamiento de órdenes.
+            if (Position.MarketPosition != MarketPosition.Flat)
+                return;
+
             // ── Verificar límites diarios ─────────────────────────────────────
             if (!_riskManager.CanTrade())
             {
@@ -691,6 +697,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             _activeRecord       = null;
             _activeDirection    = "";
             _breakEvenTriggered = false;
+            _lastSetupBar       = CurrentBar;  // cooldown reiniciado en salida para evitar reversión inmediata
         }
 
         // ─── Callbacks de órdenes ─────────────────────────────────────────────
@@ -737,9 +744,17 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             if (orderState == OrderState.Rejected || orderState == OrderState.Cancelled)
             {
+                // Solo resetear estado si es la ORDEN DE ENTRADA rechazada.
+                // Órdenes de bracket (stop/target) comparten el mismo nombre y se cancelan
+                // automáticamente cuando el lado opuesto se llena — ignorarlas para no
+                // corromper el estado interno ni bypassear FinalizarPosicion.
+                bool isEntryOrder = order.OrderAction == OrderAction.Buy
+                                 || order.OrderAction == OrderAction.SellShort;
+                if (!isEntryOrder) return;
+
                 _entrySubmitted = false;
                 _positionOpen   = Position.MarketPosition != MarketPosition.Flat;
-                Print($"[STCFollower] Orden {orderState}: {nativeError}");
+                Print($"[STCFollower] Orden entrada {orderState}: {nativeError}");
             }
         }
 

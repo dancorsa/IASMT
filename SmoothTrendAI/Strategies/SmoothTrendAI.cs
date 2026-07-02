@@ -111,7 +111,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 Name        = "SmoothTrendAI";
                 Calculate   = Calculate.OnBarClose;
                 IsOverlay   = true;
-                BarsRequiredToTrade = 30;
+                BarsRequiredToTrade = 1;  // 1 para no forzar a NT8 a cargar 30 días extra de la serie Daily secundaria
                 IsExitOnSessionCloseStrategy  = true;
                 ExitOnSessionCloseSeconds     = 30;
 
@@ -302,9 +302,21 @@ namespace NinjaTrader.NinjaScript.Strategies
 
         protected override void OnBarUpdate()
         {
+            try
+            {
+                OnBarUpdateInner();
+            }
+            catch (Exception ex)
+            {
+                Print($"[STA] EXCEPCIÓN bar={CurrentBar} {Time[0]:HH:mm}: {ex.GetType().Name} — {ex.Message}");
+            }
+        }
+
+        private void OnBarUpdateInner()
+        {
             // Solo procesar la barra principal
             if (BarsInProgress != IDX_MAIN) return;
-            if (CurrentBar < BarsRequiredToTrade) return;
+            if (CurrentBar < 30) return;  // warmup real de la nube EMA
 
             // ── Nube visual: líneas + fondo de barra ─────────────────────────
             if (ShowCloudInStrategy && _cloud != null && _cloud.TriggerValue > 0)
@@ -434,9 +446,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             if (!setup.IsValidSetup)
             {
                 _dashSignalStatus = "—  sin señal";
-                // Diagnóstico: imprime estado cada 100 barras para verificar que las señales llegan
-                if (CurrentBar % 100 == 0)
-                    Print($"[STA-DIAG] Bar={CurrentBar} CX↑={_cloud.HasCrossUpSignal} CX↓={_cloud.HasCrossDownSignal} Touch↑={_cloud.TouchedCloudFromAbove} Touch↓={_cloud.TouchedCloudFromBelow} DirDiaria={_dailyFilter.AllowedDirection}");
+                Print($"[STA-DIAG] Bar={CurrentBar} {Time[0]:HH:mm} CX↑={_cloud.HasCrossUpSignal} CX↓={_cloud.HasCrossDownSignal} Touch↑={_cloud.TouchedCloudFromAbove} Touch↓={_cloud.TouchedCloudFromBelow} BarsEnColor={_cloud.BarsInCurrentColor} Nube={_cloud.CurrentCloudColor} Dir={_dailyFilter.AllowedDirection}");
                 return;
             }
 
@@ -592,7 +602,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                 : 0;
 
             // ── Filtro R:R mínimo ─────────────────────────────────────────
-            if (UseMinRR && rrRatio < MinRR)
+            if (UseMinRR && Math.Round(rrRatio, 2) < MinRR)
             {
                 _dashSignalStatus = $"⚠ R:R={rrRatio:F2}  <{MinRR}  (ratio insuficiente)";
                 LogRechazo(setup, "MinRR", rsiM15, $"R:R={rrRatio:F2} < {MinRR}", rrRatio);
@@ -638,6 +648,17 @@ namespace NinjaTrader.NinjaScript.Strategies
                 ProposedTarget2          = riskPrelim.Target2Price,
                 RiskRewardRatio          = Math.Round(rrRatio, 2)
             };
+
+            // ── Bypass IA cuando está desactivada ────────────────────────
+            if (!EnableAIValidation)
+            {
+                _dashSignalStatus = $"✓ {setup.Direction}  {setup.SetupType}  R:R={rrRatio:F2}  (IA desactivada) — ENTRADA";
+                EjecutarEntrada(setup, riskPrelim,
+                    new STAAIValidationResult { Approve = true, Confidence = 1.0, RiskAdjustment = 1.0,
+                                               SetupQuality = "high", Reason = "IA desactivada" },
+                    rsiM15, payload);
+                return;
+            }
 
             // ── Llamada a IA (síncrona dentro de la estrategia) ───────────
             bool isHistorical = State == State.Historical;
