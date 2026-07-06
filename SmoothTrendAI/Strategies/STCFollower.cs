@@ -270,6 +270,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _currentDayLow  = Math.Min(_currentDayLow,  Low[0]);
             }
 
+            // ── Solo operar en tiempo real ────────────────────────────────────
+            // En modo histórico el framework simula fills que nunca llegan al broker,
+            // generando log de "entradas" falsas y estado interno inconsistente al
+            // hacer la transición a Realtime.
+            if (State != State.Realtime) return;
+
             // ── Tasa de barras (rolling 60 min) ───────────────────────────────
             _barTimes.Enqueue(Time[0]);
             while (_barTimes.Count > 0 && (Time[0] - _barTimes.Peek()).TotalMinutes > 60)
