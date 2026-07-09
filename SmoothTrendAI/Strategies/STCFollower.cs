@@ -207,13 +207,28 @@ namespace NinjaTrader.NinjaScript.Strategies
                 _cloudUpBrush.Freeze();
                 _cloudDownBrush.Freeze();
 
-                _journal.Open(Instrument.FullName);
+                _journal.Open(Instrument.FullName, Account?.Name);
                 _adx = ADX(ADXPeriod);
             }
             else if (State == State.Realtime)
             {
                 _riskManager.ResetDaily();
                 _lastDailyReset = DateTime.Today;
+
+                // Pre-poblar la cola de BarRate con barras recientes para no arrancar
+                // en cero tras un reinicio/recarga. Sin esto, el filtro bloquea señales
+                // válidas durante la primera hora después de cada restart.
+                if (CurrentBar > 0)
+                {
+                    _barTimes.Clear();
+                    DateTime cutoff   = Time[0].AddMinutes(-60);
+                    int      lookback = Math.Min(CurrentBar, 200);
+                    var      recent   = new List<DateTime>();
+                    for (int i = lookback; i >= 0; i--)
+                        if (Time[i] >= cutoff) recent.Add(Time[i]);
+                    foreach (var t in recent) _barTimes.Enqueue(t);
+                    Print($"[STC] LIVE: contadores reiniciados. BarRate={_barTimes.Count} barras/hora.");
+                }
             }
             else if (State == State.Terminated)
             {
@@ -356,7 +371,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
 
             // ── Filtro ADX (evitar zonas de indecisión) ───────────────────────
-            if (UseADXFilter && _adx[0] < ADXMinTrend)
+            if (UseADXFilter && Math.Round(_adx[0], 1) < ADXMinTrend)
             {
                 _dashSignalStatus = $"⚠ ADX={_adx[0]:F1}  <{ADXMinTrend}  (mercado sin tendencia)";
                 Print($"[STC-DIAG] BLOQUEADO ADX: {direction} {setupType} " +
@@ -712,6 +727,12 @@ namespace NinjaTrader.NinjaScript.Strategies
                                                   MarketPosition marketPosition,
                                                   string orderId, DateTime time)
         {
+            // NinjaTrader puede reproducir ejecuciones históricas de la cuenta (mismos
+            // nombres de orden) al reconectar/recargar la estrategia. Sin este guard,
+            // fills de días anteriores se registran como trades de hoy, contaminando
+            // _riskManager.DailyPnL y el journal (ver guard análogo en OnBarUpdate).
+            if (State != State.Realtime) return;
+
             if (execution?.Order == null ||
                 (execution.Order.OrderState != OrderState.Filled &&
                  execution.Order.OrderState != OrderState.PartFilled)) return;
@@ -742,6 +763,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                               OrderState orderState, DateTime time,
                                               ErrorCode error, string nativeError)
         {
+            if (State != State.Realtime) return;
             if (order == null) return;
             string name = order.Name ?? "";
             if (name != "STC_TP1_Long" && name != "STC_TP1_Short" &&
@@ -786,7 +808,7 @@ namespace NinjaTrader.NinjaScript.Strategies
 
             // ADX
             double adxVal = _adx[0];
-            bool   adxOk  = !UseADXFilter || adxVal >= ADXMinTrend;
+            bool   adxOk  = !UseADXFilter || Math.Round(adxVal, 1) >= ADXMinTrend;
             string adxStr = UseADXFilter
                 ? $"{(adxOk ? V : X)}  {adxVal:F1}  (mín {ADXMinTrend})"
                 : $"{NA}  desactivado";
