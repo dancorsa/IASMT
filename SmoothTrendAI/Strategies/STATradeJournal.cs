@@ -4,6 +4,7 @@
 // Ruta: Documents\NinjaTrader 8\logs\SmoothTrendAI_{yyyyMMdd}.csv
 // ============================================================
 using System;
+using System.Globalization;
 using System.IO;
 using System.Text;
 
@@ -99,7 +100,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             "stop_ticks,tp1_hit,tp2_hit,exit_reason," +
             "consecutive_losses_at_entry";
 
-        public void Open(string instrument)
+        public void Open(string instrument, string accountName = null)
         {
             try
             {
@@ -108,8 +109,11 @@ namespace NinjaTrader.NinjaScript.Strategies
                     "NinjaTrader 8", "logs");
 
                 Directory.CreateDirectory(logDir);
-                string fecha    = DateTime.Now.ToString("yyyyMMdd");
-                string filePath = Path.Combine(logDir, $"SmoothTrendAI_{fecha}.csv");
+                string fecha  = DateTime.Now.ToString("yyyyMMdd");
+                // Sufijo de cuenta evita que dos cuentas corriendo la misma estrategia
+                // compitan por el mismo archivo (lock exclusivo) y mezclen/dupliquen trades.
+                string suffix   = string.IsNullOrEmpty(accountName) ? "" : "_" + SanitizeForFileName(accountName);
+                string filePath = Path.Combine(logDir, $"SmoothTrendAI_{fecha}{suffix}.csv");
 
                 bool esNuevo = !File.Exists(filePath);
                 _writer = new StreamWriter(filePath, append: true, encoding: Encoding.UTF8);
@@ -165,17 +169,17 @@ namespace NinjaTrader.NinjaScript.Strategies
             try
             {
                 _rejectedWriter.WriteLine(string.Join(",",
-                    r.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss"),
+                    r.Timestamp.ToString("yyyy-MM-ddTHH:mm:ss", Inv),
                     Esc(r.Instrument ?? ""),
                     r.Direction,
                     r.SetupType,
                     r.RejectReason,
-                    r.BaseConfidence.ToString("F2"),
-                    r.AiConfidence.ToString("F2"),
+                    r.BaseConfidence.ToString("F2", Inv),
+                    r.AiConfidence.ToString("F2", Inv),
                     Esc(r.AiReason ?? ""),
                     r.ElliottWave,
                     r.DailyContext,
-                    r.RiskReward.ToString("F2")
+                    r.RiskReward.ToString("F2", Inv)
                 ));
                 _rejectedWriter.Flush();
             }
@@ -204,46 +208,59 @@ namespace NinjaTrader.NinjaScript.Strategies
             }
         }
 
+        private static readonly CultureInfo Inv = CultureInfo.InvariantCulture;
+
         private string BuildLine(STATradeRecord r)
         {
+            // CultureInfo.InvariantCulture es obligatorio en todo campo numérico:
+            // si el proceso corre con una configuración regional de coma decimal,
+            // ToString("F2") produce p.ej. "29870,25", y esa coma extra desalinea
+            // las columnas del CSV (el separador de campos también es coma).
             return string.Join(",",
-                r.TimestampEntry.ToString("yyyy-MM-ddTHH:mm:ss"),
-                r.TimestampExit.ToString("yyyy-MM-ddTHH:mm:ss"),
+                r.TimestampEntry.ToString("yyyy-MM-ddTHH:mm:ss", Inv),
+                r.TimestampExit.ToString("yyyy-MM-ddTHH:mm:ss", Inv),
                 Esc(r.Instrument),
                 Esc(r.BarType),
                 r.Direction,
                 r.SetupType,
                 Esc(r.RejectionCandle ?? ""),
-                r.EntryPrice.ToString("F2"),
-                r.ExitPrice.ToString("F2"),
-                r.Contracts.ToString(),
-                r.PnlTicks.ToString("F1"),
-                r.PnlUsd.ToString("F2"),
-                r.TriggerLineAtEntry.ToString("F4"),
-                r.SmoothLineAtEntry.ToString("F4"),
-                r.CloudWidthAtEntry.ToString("F4"),
-                r.BarsInCurrentColor.ToString(),
+                r.EntryPrice.ToString("F2", Inv),
+                r.ExitPrice.ToString("F2", Inv),
+                r.Contracts.ToString(Inv),
+                r.PnlTicks.ToString("F1", Inv),
+                r.PnlUsd.ToString("F2", Inv),
+                r.TriggerLineAtEntry.ToString("F4", Inv),
+                r.SmoothLineAtEntry.ToString("F4", Inv),
+                r.CloudWidthAtEntry.ToString("F4", Inv),
+                r.BarsInCurrentColor.ToString(Inv),
                 r.DailyContext,
                 r.AllowedDirection,
-                r.PriorHigh.ToString("F2"),
-                r.PriorClose.ToString("F2"),
-                r.PriorLow.ToString("F2"),
-                r.ConsecutiveDirectionDays.ToString(),
+                r.PriorHigh.ToString("F2", Inv),
+                r.PriorClose.ToString("F2", Inv),
+                r.PriorLow.ToString("F2", Inv),
+                r.ConsecutiveDirectionDays.ToString(Inv),
                 r.ElliottWavePosition,
-                r.ElliottWaveConfidence.ToString("F2"),
-                r.ElliottMultiplierApplied.ToString("F2"),
-                r.RsiM15.ToString("F1"),
-                r.VolumeRatio.ToString("F2"),
-                r.AiConfidence.ToString("F2"),
-                r.AiRiskAdjustment.ToString("F2"),
+                r.ElliottWaveConfidence.ToString("F2", Inv),
+                r.ElliottMultiplierApplied.ToString("F2", Inv),
+                r.RsiM15.ToString("F1", Inv),
+                r.VolumeRatio.ToString("F2", Inv),
+                r.AiConfidence.ToString("F2", Inv),
+                r.AiRiskAdjustment.ToString("F2", Inv),
                 Esc(r.AiSetupQuality ?? ""),
                 Esc(r.AiReason ?? ""),
-                r.StopTicks.ToString("F1"),
+                r.StopTicks.ToString("F1", Inv),
                 r.Tp1Hit ? "1" : "0",
                 r.Tp2Hit ? "1" : "0",
                 Esc(r.ExitReason ?? ""),
-                r.ConsecutiveLossesAtEntry.ToString()
+                r.ConsecutiveLossesAtEntry.ToString(Inv)
             );
+        }
+
+        private static string SanitizeForFileName(string s)
+        {
+            foreach (char c in Path.GetInvalidFileNameChars())
+                s = s.Replace(c, '_');
+            return s;
         }
 
         private static string Esc(string s)
