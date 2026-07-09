@@ -432,6 +432,12 @@ namespace NinjaTrader.NinjaScript.Strategies
             // ── Tablero de filtros (se dibuja siempre, con o sin señal) ───
             DibujarDashboard(setup);
 
+            // ── Solo operar en tiempo real ────────────────────────────────────────
+            // Los indicadores y el contexto diario siguen actualizándose en histórico
+            // (BarRate, VWAP, dailyFilter, Elliott) pero sin esta guardia _lastSetupBar
+            // se contamina durante el replay y bloquea la primera señal real por cooldown.
+            if (State != State.Realtime) return;
+
             // ── Gestión de posición abierta (máxima prioridad) ────────────
             if (_positionOpen)
             {
@@ -1061,6 +1067,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                                   MarketPosition marketPosition,
                                                   string orderId, DateTime time)
         {
+            if (State != State.Realtime) return;
             if (execution?.Order == null ||
                 (execution.Order.OrderState != OrderState.Filled &&
                  execution.Order.OrderState != OrderState.PartFilled))
@@ -1091,6 +1098,7 @@ namespace NinjaTrader.NinjaScript.Strategies
                                               OrderState orderState, DateTime time,
                                               ErrorCode error, string nativeError)
         {
+            if (State != State.Realtime) return;
             if (order == null) return;
 
             string name = order.Name ?? "";
