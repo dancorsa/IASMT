@@ -1453,7 +1453,7 @@ namespace NinjaTrader.NinjaScript.Strategies
             double volRatio = _avgVolume20 > 0 ? Volume[0] / _avgVolume20 : 0;
             bool   volOk    = !RequireVolumeConfirmation || volRatio >= 1.10;
             string volStr   = RequireVolumeConfirmation
-                ? $"{(volOk ? V : X)}  {volRatio:F2}x  (mín 1.10x)"
+                ? $"{(volOk ? V : X)}  {volRatio:F2}x  (mín {1.10:F2}x)"
                 : $"{NA}  desactivado";
 
             // RSI

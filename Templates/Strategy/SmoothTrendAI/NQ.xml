@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <StrategyTemplate>
   <StrategyType>NinjaTrader.NinjaScript.Strategies.SmoothTrendAI</StrategyType>
   <OptimizerType>NinjaTrader.NinjaScript.Optimizers.DefaultOptimizer</OptimizerType>
@@ -174,38 +174,38 @@
       <Parameter>
         <EnumValuesSerializable />
         <Increment>1</Increment>
-        <Max xsi:type="xsd:double">1</Max>
-        <Min xsi:type="xsd:double">1</Min>
+        <Max xsi:type="xsd:double">1.5</Max>
+        <Min xsi:type="xsd:double">1.5</Min>
         <Name>TP1RatioTrendStart</Name>
         <ParameterTypeSerializable>System.Double, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</ParameterTypeSerializable>
-        <ValueSerializable>1</ValueSerializable>
+        <ValueSerializable>1.5</ValueSerializable>
       </Parameter>
       <Parameter>
         <EnumValuesSerializable />
         <Increment>1</Increment>
-        <Max xsi:type="xsd:double">2</Max>
-        <Min xsi:type="xsd:double">2</Min>
+        <Max xsi:type="xsd:double">3</Max>
+        <Min xsi:type="xsd:double">3</Min>
         <Name>TP2RatioTrendStart</Name>
         <ParameterTypeSerializable>System.Double, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</ParameterTypeSerializable>
-        <ValueSerializable>2</ValueSerializable>
-      </Parameter>
-      <Parameter>
-        <EnumValuesSerializable />
-        <Increment>1</Increment>
-        <Max xsi:type="xsd:double">1</Max>
-        <Min xsi:type="xsd:double">1</Min>
-        <Name>TP1RatioCloudPullback</Name>
-        <ParameterTypeSerializable>System.Double, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</ParameterTypeSerializable>
-        <ValueSerializable>1</ValueSerializable>
+        <ValueSerializable>3</ValueSerializable>
       </Parameter>
       <Parameter>
         <EnumValuesSerializable />
         <Increment>1</Increment>
         <Max xsi:type="xsd:double">2</Max>
         <Min xsi:type="xsd:double">2</Min>
-        <Name>TP2RatioCloudPullback</Name>
+        <Name>TP1RatioCloudPullback</Name>
         <ParameterTypeSerializable>System.Double, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</ParameterTypeSerializable>
         <ValueSerializable>2</ValueSerializable>
+      </Parameter>
+      <Parameter>
+        <EnumValuesSerializable />
+        <Increment>1</Increment>
+        <Max xsi:type="xsd:double">4</Max>
+        <Min xsi:type="xsd:double">4</Min>
+        <Name>TP2RatioCloudPullback</Name>
+        <ParameterTypeSerializable>System.Double, mscorlib, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</ParameterTypeSerializable>
+        <ValueSerializable>4</ValueSerializable>
       </Parameter>
       <Parameter>
         <EnumValuesSerializable>
@@ -612,10 +612,10 @@
       <MinStopTicks>6</MinStopTicks>
       <TrailAfterTP1>true</TrailAfterTP1>
       <PorcentajeTP1>50</PorcentajeTP1>
-      <TP1RatioTrendStart>1</TP1RatioTrendStart>
-      <TP2RatioTrendStart>2</TP2RatioTrendStart>
-      <TP1RatioCloudPullback>1</TP1RatioCloudPullback>
-      <TP2RatioCloudPullback>2</TP2RatioCloudPullback>
+      <TP1RatioTrendStart>1.5</TP1RatioTrendStart>
+      <TP2RatioTrendStart>3</TP2RatioTrendStart>
+      <TP1RatioCloudPullback>2</TP1RatioCloudPullback>
+      <TP2RatioCloudPullback>4</TP2RatioCloudPullback>
       <DireccionPermitida>Ambas</DireccionPermitida>
       <RestrictToRTH>false</RestrictToRTH>
       <RequireVolumeConfirmation>true</RequireVolumeConfirmation>

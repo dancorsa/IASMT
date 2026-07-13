@@ -234,7 +234,7 @@ namespace NinjaTrader.NinjaScript.Strategies
         private bool ConfirmarVolumenReforzado()
         {
             if (!RequireVolumeConfirmation) return true;
-            return _avgVolume20 > 0 && _volume0 >= _avgVolume20 * 1.10;
+            return _avgVolume20 > 0 && _volume0 >= _avgVolume20 * 1.30;
         }
     }
 }
